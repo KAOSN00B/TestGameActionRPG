@@ -76,7 +76,8 @@ std::vector<EngagementAssignment> BuildEngagementAssignments(
     std::vector<EngagementAssignment> result;
     result.reserve(candidates.size());
 
-    const int commitLimit = CombatCommitLimit(tier, swarm);
+    const int baseLimit = Balance::Rhythm::kCommittersByTier[ClampTier(tier)];
+    const int bonusLimit = swarm ? Balance::Rhythm::kSwarmExtraCommitters : 0;
 
     // Locked owners keep Commit unconditionally and are counted against the
     // budget first; every other alive candidate competes for what's left.
@@ -91,7 +92,13 @@ std::vector<EngagementAssignment> BuildEngagementAssignments(
         contenders.push_back(i);
     }
 
-    const int remainingSlots = (commitLimit > lockedCount) ? (commitLimit - lockedCount) : 0;
+    // Locked owners consume the base pool first; any overflow beyond the base
+    // budget eats into the fragile-swarm bonus pool too, so the total commit
+    // count never exceeds CombatCommitLimit(tier, swarm) regardless of how
+    // many owners are already locked in from a prior frame.
+    const int baseSlotsRemaining = (baseLimit > lockedCount) ? (baseLimit - lockedCount) : 0;
+    const int lockedOverflow = (lockedCount > baseLimit) ? (lockedCount - baseLimit) : 0;
+    const int bonusSlotsRemaining = (bonusLimit > lockedOverflow) ? (bonusLimit - lockedOverflow) : 0;
 
     // Stable, fully deterministic ranking: ascending distance, then role, then
     // ascending id — id guarantees a strict total order so there is never a
@@ -109,8 +116,27 @@ std::vector<EngagementAssignment> BuildEngagementAssignments(
     });
 
     std::vector<bool> selectedToCommit(candidates.size(), false);
-    for (int i = 0; i < remainingSlots && i < static_cast<int>(ranked.size()); ++i)
-        selectedToCommit[ranked[static_cast<size_t>(i)]] = true;
+
+    // Base pool: any role/profile competes on rank alone.
+    size_t rankIdx = 0;
+    int baseFilled = 0;
+    for (; rankIdx < ranked.size() && baseFilled < baseSlotsRemaining; ++rankIdx)
+    {
+        selectedToCommit[ranked[rankIdx]] = true;
+        ++baseFilled;
+    }
+
+    // Bonus pool: reserved for fragile swarm-profile candidates only (design:
+    // "swarm encounters may use one additional committer, but only for
+    // fragile swarm-profile enemies"). Non-swarm candidates cannot claim it,
+    // so it may go unused even when swarm mode is active.
+    int bonusFilled = 0;
+    for (size_t i = rankIdx; i < ranked.size() && bonusFilled < bonusSlotsRemaining; ++i)
+    {
+        if (!candidates[ranked[i]].swarm) continue;
+        selectedToCommit[ranked[i]] = true;
+        ++bonusFilled;
+    }
 
     for (size_t i = 0; i < candidates.size(); ++i)
     {

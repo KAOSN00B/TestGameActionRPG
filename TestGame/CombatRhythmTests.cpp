@@ -64,11 +64,57 @@ int main()
         assert(tier1.size() == 6);
         assert(CountCommit(tier1) == 3);
 
+        // No candidate in `six` is swarm-profile, so the fragile-swarm bonus
+        // slot (Balance::Rhythm::kSwarmExtraCommitters) goes unused even with
+        // swarm mode active — the bonus slot is reserved for swarm-profile
+        // enemies specifically, not a free budget increase for everyone.
         const auto tier0Swarm = BuildEngagementAssignments(six, 0, true, 42);
-        assert(CountCommit(tier0Swarm) == 3);
+        assert(CountCommit(tier0Swarm) == 2);
 
         const auto tier1Swarm = BuildEngagementAssignments(six, 1, true, 42);
-        assert(CountCommit(tier1Swarm) == 4);
+        assert(CountCommit(tier1Swarm) == 3);
+    }
+
+    // ── 2b. Fragile-swarm bonus slot: only usable by swarm-profile candidates
+    {
+        std::vector<EngagementCandidate> withSwarmProfile = {
+            MakeCandidate(40, EnemyRole::Grunt,   50.f),
+            MakeCandidate(41, EnemyRole::Charger, 60.f),
+            MakeCandidate(42, EnemyRole::Ranged, 500.f, /*alive*/true, /*locked*/false,
+                          /*recovering*/false, /*swarm*/true),
+        };
+
+        // Base limit (tier 0) is 2; the two closest (40, 41) fill it. With
+        // swarm=true the bonus slot goes to the swarm-profile candidate (42)
+        // despite its much greater distance, because only a fragile
+        // swarm-profile candidate may claim the bonus slot.
+        const auto withSwarm = BuildEngagementAssignments(withSwarmProfile, 0, true, 5);
+        assert(CountCommit(withSwarm) == 3);
+        assert(FindAssignment(withSwarm, 42)->intent == EngagementIntent::Commit);
+
+        // Without swarm mode active, the bonus slot doesn't exist at all, so
+        // the same swarm-profile candidate does not commit.
+        const auto withoutSwarm = BuildEngagementAssignments(withSwarmProfile, 0, false, 5);
+        assert(CountCommit(withoutSwarm) == 2);
+        assert(FindAssignment(withoutSwarm, 42)->intent != EngagementIntent::Commit);
+    }
+
+    // ── 2c. Bonus pool stays capped even with multiple eligible candidates ──
+    {
+        std::vector<EngagementCandidate> manySwarm = {
+            MakeCandidate(50, EnemyRole::Grunt,   50.f),
+            MakeCandidate(51, EnemyRole::Charger, 60.f),
+            MakeCandidate(52, EnemyRole::Ranged, 100.f, true, false, false, /*swarm*/true),
+            MakeCandidate(53, EnemyRole::Zoner,  110.f, true, false, false, /*swarm*/true),
+        };
+
+        // Base pool (2) fills with 50/51; only ONE of the two remaining
+        // swarm-profile candidates gets the single bonus slot — the closer
+        // one (52) wins under the same rank ordering used for the base pool.
+        const auto assignments = BuildEngagementAssignments(manySwarm, 0, true, 8);
+        assert(CountCommit(assignments) == 3);
+        assert(FindAssignment(assignments, 52)->intent == EngagementIntent::Commit);
+        assert(FindAssignment(assignments, 53)->intent != EngagementIntent::Commit);
     }
 
     // ── 3. Locked owners retain Commit and are never displaced ──────────────
