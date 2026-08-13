@@ -24,6 +24,14 @@ int main()
     assert((int)tightPlan.opening.size() <= 4);
     assert(tightPlan.debug.plannedPopulation <= 7);
     assert(tightPlan.debug.expensiveUnits <= 1);
+    // Task 4 (Reinforcement Pacing): the planner's opening/reinforcements split
+    // must always account for the full planned population — Engine.cpp's Task 4
+    // change only re-partitions HOW MANY of plan.opening spawn immediately vs.
+    // get queued as pending reservations; it never adds/drops planner output,
+    // so this invariant holding here is sufficient (every populationCost in
+    // this table is 1, so entry count == plannedPopulation exactly).
+    assert((int)tightPlan.opening.size() + (int)tightPlan.reinforcements.size()
+           == tightPlan.debug.plannedPopulation);
 
     EncounterRequest large{};
     large.seed = 72;
@@ -36,6 +44,10 @@ int main()
     assert(moreAbilities.debug.plannedPopulation >= fewerAbilities.debug.plannedPopulation);
     assert(moreAbilities.debug.plannedPopulation <= 13);
     assert((int)moreAbilities.opening.size() <= 8);
+    assert((int)fewerAbilities.opening.size() + (int)fewerAbilities.reinforcements.size()
+           == fewerAbilities.debug.plannedPopulation);
+    assert((int)moreAbilities.opening.size() + (int)moreAbilities.reinforcements.size()
+           == moreAbilities.debug.plannedPopulation);
 
     EncounterRequest swarm{};
     swarm.seed = 99;
@@ -48,6 +60,8 @@ int main()
     assert(swarmPlan.debug.plannedPopulation <= 18);
     assert((int)swarmPlan.opening.size() <= 10);
     assert(!swarmPlan.reinforcements.empty());
+    assert((int)swarmPlan.opening.size() + (int)swarmPlan.reinforcements.size()
+           == swarmPlan.debug.plannedPopulation);
 
     return 0;
 }

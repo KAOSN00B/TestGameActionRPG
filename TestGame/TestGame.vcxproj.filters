@@ -228,6 +228,9 @@
     <ClCompile Include="CombatEngagement.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ReinforcementPacing.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MapDirector.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -489,6 +492,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CombatEngagement.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ReinforcementPacing.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MapDirector.h">

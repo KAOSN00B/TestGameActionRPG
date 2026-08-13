@@ -172,6 +172,7 @@
     <ClCompile Include="CyclopsLaserProjectile.cpp" />
     <ClCompile Include="CombatDirector.cpp" />
     <ClCompile Include="CombatEngagement.cpp" />
+    <ClCompile Include="ReinforcementPacing.cpp" />
     <ClCompile Include="ContentDocument.cpp" />
     <ClCompile Include="ContentTypes.cpp" />
     <ClCompile Include="ContentSerializers.cpp" />
@@ -277,6 +278,7 @@
     <ClInclude Include="Character.h" />
     <ClInclude Include="CombatDirector.h" />
     <ClInclude Include="CombatEngagement.h" />
+    <ClInclude Include="ReinforcementPacing.h" />
     <ClInclude Include="ContentDocument.h" />
     <ClInclude Include="ContentTypes.h" />
     <ClInclude Include="ContentSerializers.h" />

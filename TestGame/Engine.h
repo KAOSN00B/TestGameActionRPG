@@ -46,6 +46,7 @@
 #include "VFXManager.h"
 #include "DamageNumberManager.h"
 #include "EncounterPlanner.h"
+#include "ReinforcementPacing.h"
 #include "ShopManager.h"
 #include "DebugPanel.h"
 #include "WorldConfig.h"
@@ -70,7 +71,6 @@
 #include "CharacterAnimator.h"
 #include "AttackEditor.h"
 #include "MapEditor.h"
-#include "VillageMap.h"
 #include "DungeonGen.h"
 #include "TileDefs.h"
 #include "RoomLayout.h"
@@ -345,9 +345,11 @@ private:
     // Playable village-builder placement test (debug/dev). This is intentionally
     // runtime-facing, separate from MapEditor, so placement can be tested with the
     // real player controller, camera, attacks, abilities, and collision response.
+    enum class VillageObjectLayer { Ground, Objects, Overhead };
+
     struct VillageRuntimePart
     {
-        VillageMap::Layer layer = VillageMap::Layer::Objects;
+        VillageObjectLayer layer = VillageObjectLayer::Objects;
         short localCol = 0, localRow = 0;
         short sheet = -1;
         short col = 0, row = 0;
@@ -418,10 +420,13 @@ private:
     bool LoadVillageRuntimeAssetObject(const std::string& path, VillageRuntimeObjectDef& outDef) const;
     void UpdateVillagePlayground(float dt);
     void DrawVillagePlayground();
-    void DrawVillageRuntimeObject(const VillageRuntimeObjectDef& def, int cellCol, int cellRow, Vector2 worldOffset, Color tint, VillageMap::Layer layer) const;
+    void DrawVillageRuntimeObject(const VillageRuntimeObjectDef& def, int cellCol, int cellRow, Vector2 worldOffset, Color tint, VillageObjectLayer layer) const;
     bool VillagePlaygroundCanPlace(int defIndex, int cellCol, int cellRow) const;
     Rectangle VillagePlacedObjectWorldRect(const VillagePlacedObject& placed, const VillageRuntimeSolid* solid) const;
     bool VillageObjectHasSolidAt(const VillageRuntimeObjectDef& def, int localCol, int localRow) const;
+    static bool VillageObjectIsOneTimeService(const VillageRuntimeObjectDef& def);
+    static bool VillageObjectIsPermanentService(const VillageRuntimeObjectDef& def);
+    static const char* VillageObjectRuleLabel(const VillageRuntimeObjectDef& def);
     void ResolveVillagePlaygroundCollision(Vector2 beforePos);
     // Doors + NPCs on placed village objects
     Rectangle VillageDoorWorldRect(const VillagePlacedObject& placed, const VillageRuntimeDoor& door) const;
@@ -1507,9 +1512,23 @@ private:
     int   _roomEncounterTier  = 0;
     int   _roomPressureSpent  = 0;                   // debug readout
     int   _roomPressureCapDbg = 0;                   // debug readout
+    // Reserved-but-not-yet-instantiated reinforcement slots (purple-circle /
+    // smoke telegraph state machine — see ReinforcementPacing.h). Stays small
+    // in practice (at most 1-2 entries per batch, one batch pending at a
+    // time), so an unbounded-looking std::vector never actually grows beyond
+    // a handful of entries.
+    std::vector<PendingEnemySpawn> _pendingEnemySpawns;
     // Spawns one mixed-table grunt by typeId (shared by the room opening and
     // reinforcement waves), including the role-based placement nudge.
     Enemy* SpawnDungeonGrunt(const EncounterSpawnEntry& entry, Vector2 pos, float cellW, float cellH);
+    // Reinforcement pacing (Task 4): reserve 1-2 new telegraphed spawns from
+    // the front of _dungeonReinforcements when the room is below its
+    // simultaneous body target and no batch is already pending; advance every
+    // pending spawn's Circle->Smoke->Ready timer and instantiate/requeue at
+    // Ready. See ReinforcementPacing.h for the underlying pure policy.
+    void TryReserveDungeonReinforcementBatch(float cellW, float cellH);
+    void AdvanceDungeonPendingSpawns(float dt, float cellW, float cellH);
+    bool IsDungeonReinforcementPosStillValid(Vector2 pos, float cellW, float cellH) const;
     // Hazard persistence: snapshot the live hazards into the current room's
     // state and rebuild them on re-entry (lavaOnly = cleared-room terrain).
     void SaveDungeonRoomHazardState();

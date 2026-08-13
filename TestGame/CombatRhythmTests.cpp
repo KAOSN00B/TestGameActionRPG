@@ -1,4 +1,5 @@
 #include "CombatEngagement.h"
+#include "ReinforcementPacing.h"
 
 #include <cassert>
 #include <cmath>
@@ -388,6 +389,82 @@ int main()
                 }
             }
         }
+    }
+
+    // ── Task 4: SimultaneousBodyTarget — 3/4/5/6 by room-capacity band ───────
+    {
+        assert(SimultaneousBodyTarget(RoomCapacityBand::Small)  == 3);
+        assert(SimultaneousBodyTarget(RoomCapacityBand::Medium) == 4);
+        assert(SimultaneousBodyTarget(RoomCapacityBand::Large)  == 5);
+        assert(SimultaneousBodyTarget(RoomCapacityBand::Arena)  == 6);
+    }
+
+    // ── Task 4: ReinforcementBatchSize — 1-2 per batch, never bypasses target
+    {
+        // Small gap (1 below target): returns the full remaining gap.
+        assert(ReinforcementBatchSize(/*active*/2, /*pending*/0, /*target*/3, /*queued*/5) == 1);
+
+        // Large gap: capped at 2 even though target - (active+pending) is bigger.
+        assert(ReinforcementBatchSize(/*active*/0, /*pending*/0, /*target*/6, /*queued*/10) == 2);
+
+        // Already at or above target: no new reservations.
+        assert(ReinforcementBatchSize(/*active*/4, /*pending*/0, /*target*/4, /*queued*/5) == 0);
+        assert(ReinforcementBatchSize(/*active*/5, /*pending*/0, /*target*/4, /*queued*/5) == 0);
+
+        // Pending reservations count against the target too — a batch already
+        // in flight (Circle/Smoke) must not be double-counted as "missing".
+        assert(ReinforcementBatchSize(/*active*/2, /*pending*/2, /*target*/4, /*queued*/5) == 0);
+
+        // Never exceeds what's left in the queue, even when the gap is larger.
+        assert(ReinforcementBatchSize(/*active*/0, /*pending*/0, /*target*/6, /*queued*/1) == 1);
+        assert(ReinforcementBatchSize(/*active*/0, /*pending*/0, /*target*/6, /*queued*/0) == 0);
+
+        // Never negative.
+        assert(ReinforcementBatchSize(/*active*/9, /*pending*/0, /*target*/3, /*queued*/5) == 0);
+    }
+
+    // ── Task 4: AdvancePendingSpawn — Circle -> Smoke -> Ready phase timing ──
+    {
+        // Starts at Circle.
+        PendingEnemySpawn spawn{};
+        assert(spawn.phase == PendingSpawnPhase::Circle);
+        assert(spawn.smokeEmitted == false);
+
+        // Short of the 0.65s circle duration: still Circle, smoke not emitted.
+        AdvancePendingSpawn(spawn, 0.64f);
+        assert(spawn.phase == PendingSpawnPhase::Circle);
+        assert(spawn.smokeEmitted == false);
+
+        // Crossing 0.65s total: transitions to Smoke, smokeEmitted flips once.
+        AdvancePendingSpawn(spawn, 0.02f);   // 0.64 + 0.02 = 0.66s
+        assert(spawn.phase == PendingSpawnPhase::Smoke);
+        assert(spawn.smokeEmitted == true);
+
+        // Staying in Smoke short of the further 0.30s: smokeEmitted does NOT
+        // flip again (it's a one-shot state flag, not re-derived every frame).
+        AdvancePendingSpawn(spawn, 0.10f);   // 0.76s total
+        assert(spawn.phase == PendingSpawnPhase::Smoke);
+        assert(spawn.smokeEmitted == true);
+
+        // Crossing 0.95s total (0.65 + 0.30): transitions to Ready.
+        AdvancePendingSpawn(spawn, 0.20f);   // 0.96s total
+        assert(spawn.phase == PendingSpawnPhase::Ready);
+
+        // Once Ready, further Update calls are a no-op.
+        float timerAtReady = spawn.timer;
+        AdvancePendingSpawn(spawn, 1.0f);
+        assert(spawn.phase == PendingSpawnPhase::Ready);
+        assert(spawn.timer == timerAtReady);
+    }
+
+    // ── Task 4: AdvancePendingSpawn — large single dt (hitch) overshoot ──────
+    // One large dt must walk through Circle -> Smoke -> Ready in a single
+    // call, not require multiple Update calls to converge.
+    {
+        PendingEnemySpawn spawn{};
+        AdvancePendingSpawn(spawn, 2.0f);
+        assert(spawn.phase == PendingSpawnPhase::Ready);
+        assert(spawn.smokeEmitted == true);
     }
 
     return 0;

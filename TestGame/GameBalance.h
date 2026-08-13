@@ -376,6 +376,13 @@ namespace Balance::Rhythm
     inline constexpr int   kCommittersByTier[3]    = { 2, 3, 3 };
     inline constexpr int   kSwarmExtraCommitters   = 1;   // fragile swarm-profile bonus slot
     inline constexpr float kPostCommitRepositionSeconds = 0.65f; // forced reposition after releasing a slot
+
+    // Reinforcement spawn telegraph (ReinforcementPacing): purple circle warning,
+    // then a smoke transition, then the enemy is instantiated. ~0.95s total —
+    // see docs/superpowers/specs/2026-08-13-hades-style-enemy-combat-rhythm-design.md,
+    // "Spawn Telegraph and VFX".
+    inline constexpr float kSpawnCircleSeconds = 0.65f;   // purple circle warning
+    inline constexpr float kSpawnSmokeSeconds  = 0.30f;   // smoke burst before spawn
 }
 
 namespace Balance::DamageNumbers

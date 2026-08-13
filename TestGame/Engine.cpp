@@ -1089,6 +1089,7 @@ void Engine::EnterDungeonRoom(int roomIdx, DungeonDoorSide entryDoorSide, Vector
     // Pending reinforcement waves and room hazards never follow the player
     // through a door — each room owns its own pressure.
     _dungeonReinforcements.clear();
+    _pendingEnemySpawns.clear();
     _dungeonReinforcementTimer = 0.f;
     _roomHazards.ClearRoom();
     _roomPressureSpent  = 0;
@@ -3104,22 +3105,6 @@ namespace
         Color{  88, 140, 104, 255 },
     };
 
-    bool VillageObjectIsOneTimeService(const std::string& name)
-    {
-        return name == "ZephsShop";
-    }
-
-    bool VillageObjectIsPermanentService(const std::string& name)
-    {
-        return name == "ZephsShop";
-    }
-
-    const char* VillageObjectRuleLabel(const std::string& name, bool isDecoration)
-    {
-        if (VillageObjectIsPermanentService(name)) return "one-time service";
-        if (isDecoration) return "decor";
-        return "buildable";
-    }
 }
 
 void Engine::EnterVillagePlayground() { EnterVillageShared(true); }
@@ -3348,7 +3333,7 @@ bool Engine::LoadVillageRuntimeObject(const std::string& path, VillageRuntimeObj
         if (sscanf(line, "part %c %d %d %d %d %d %127s", &layerChar, &localCol, &localRow, &sheet, &col, &row, sheetName) >= 6)
         {
             VillageRuntimePart part{};
-            part.layer = (layerChar == 'g') ? VillageMap::Layer::Ground : (layerChar == 'h') ? VillageMap::Layer::Overhead : VillageMap::Layer::Objects;
+            part.layer = (layerChar == 'g') ? VillageObjectLayer::Ground : (layerChar == 'h') ? VillageObjectLayer::Overhead : VillageObjectLayer::Objects;
             part.localCol = (short)localCol;
             part.localRow = (short)localRow;
             part.sheet = (short)sheet;
@@ -3536,6 +3521,23 @@ bool Engine::VillageObjectHasSolidAt(const VillageRuntimeObjectDef& def, int loc
     return false;
 }
 
+bool Engine::VillageObjectIsOneTimeService(const VillageRuntimeObjectDef& def)
+{
+    return def.uniqueInVillage;
+}
+
+bool Engine::VillageObjectIsPermanentService(const VillageRuntimeObjectDef& def)
+{
+    return def.required && !def.removable;
+}
+
+const char* Engine::VillageObjectRuleLabel(const VillageRuntimeObjectDef& def)
+{
+    if (VillageObjectIsPermanentService(def)) return "one-time service";
+    if (def.isDecoration) return "decor";
+    return "buildable";
+}
+
 Rectangle Engine::VillagePlacedObjectWorldRect(const VillagePlacedObject& placed, const VillageRuntimeSolid* solid) const
 {
     if (placed.defIndex < 0 || placed.defIndex >= (int)_villageObjectCatalog.size()) return Rectangle{};
@@ -3554,7 +3556,7 @@ bool Engine::VillagePlaygroundCanPlace(int defIndex, int cellCol, int cellRow) c
 {
     if (defIndex < 0 || defIndex >= (int)_villageObjectCatalog.size()) return false;
     const VillageRuntimeObjectDef& def = _villageObjectCatalog[defIndex];
-    if (!_villageSandboxMode && VillageObjectIsOneTimeService(def.name) && VillageHasPlacedObject(def.name)) return false;
+    if (!_villageSandboxMode && VillageObjectIsOneTimeService(def) && VillageHasPlacedObject(def.name)) return false;
 
     Rectangle footprint{ cellCol * kVillagePlaygroundTilePx, cellRow * kVillagePlaygroundTilePx,
                          def.cols * kVillagePlaygroundTilePx, def.rows * kVillagePlaygroundTilePx };
@@ -3988,7 +3990,7 @@ void Engine::UpdateVillagePlayground(float dt)
                                     def.cols * kVillagePlaygroundTilePx, def.rows * kVillagePlaygroundTilePx };
                     if (CheckCollisionPointRec(mouseWorld, rect))
                     {
-                        if (!_villageSandboxMode && VillageObjectIsPermanentService(def.name))
+                        if (!_villageSandboxMode && VillageObjectIsPermanentService(def))
                         {
                             _villagePlaygroundMessage = "This service building cannot be removed.";
                             _villagePlaygroundMessageTimer = 2.f;
@@ -4041,7 +4043,7 @@ void Engine::UpdateVillagePlayground(float dt)
                 else
                 {
                     const VillageRuntimeObjectDef& def = _villageObjectCatalog[_villageActiveObjectIndex];
-                    if (!_villageSandboxMode && VillageObjectIsOneTimeService(def.name) && VillageHasPlacedObject(def.name))
+                    if (!_villageSandboxMode && VillageObjectIsOneTimeService(def) && VillageHasPlacedObject(def.name))
                         _villagePlaygroundMessage = "Zeph's shop is already built.";
                     else
                         _villagePlaygroundMessage = "That spot is blocked.";
@@ -4170,12 +4172,12 @@ void Engine::UpdateVillagePlayground(float dt)
     _cameraPos.y = Clamp(_cameraPos.y, kVirtualHeight * 0.5f, field.height - kVirtualHeight * 0.5f);
 }
 
-void Engine::DrawVillageRuntimeObject(const VillageRuntimeObjectDef& def, int cellCol, int cellRow, Vector2 worldOffset, Color tint, VillageMap::Layer layer) const
+void Engine::DrawVillageRuntimeObject(const VillageRuntimeObjectDef& def, int cellCol, int cellRow, Vector2 worldOffset, Color tint, VillageObjectLayer layer) const
 {
     const Texture2D* png = def.pngTexture.id != 0 ? &def.pngTexture : ((def.name == "ZephsShop" && _villageZephShopTex.id != 0) ? &_villageZephShopTex : nullptr);
     if (png)
     {
-        if (layer != VillageMap::Layer::Objects) return;
+        if (layer != VillageObjectLayer::Objects) return;
         int animCols = std::max(1, def.pngAnimCols);
         int animRows = std::max(1, def.pngAnimRows);
         int frameW = std::max(1, def.pngAnimated ? png->width / animCols : png->width);
@@ -4266,9 +4268,9 @@ void Engine::DrawVillagePlacementGhost(Vector2 worldOffset, Vector2 mouseWorld)
     const VillageRuntimeObjectDef& def = _villageObjectCatalog[_villageActiveObjectIndex];
     bool ok = VillagePlaygroundCanPlace(_villageActiveObjectIndex, cellCol, cellRow);
     Color tint = ok ? Color{ 180, 255, 180, 170 } : Color{ 255, 80, 80, 165 };
-    DrawVillageRuntimeObject(def, cellCol, cellRow, worldOffset, tint, VillageMap::Layer::Ground);
-    DrawVillageRuntimeObject(def, cellCol, cellRow, worldOffset, tint, VillageMap::Layer::Objects);
-    DrawVillageRuntimeObject(def, cellCol, cellRow, worldOffset, tint, VillageMap::Layer::Overhead);
+    DrawVillageRuntimeObject(def, cellCol, cellRow, worldOffset, tint, VillageObjectLayer::Ground);
+    DrawVillageRuntimeObject(def, cellCol, cellRow, worldOffset, tint, VillageObjectLayer::Objects);
+    DrawVillageRuntimeObject(def, cellCol, cellRow, worldOffset, tint, VillageObjectLayer::Overhead);
 
     Rectangle footprint{ worldOffset.x + cellCol * kVillagePlaygroundTilePx,
                          worldOffset.y + cellRow * kVillagePlaygroundTilePx,
@@ -4325,7 +4327,7 @@ void Engine::DrawVillagePlayground()
     ClearBackground(Color{ 18, 24, 20, 255 });
     DrawVillageField(worldOffset);
 
-    auto drawPlacedLayer = [&](VillageMap::Layer layer)
+    auto drawPlacedLayer = [&](VillageObjectLayer layer)
     {
         for (const VillagePlacedObject& placed : _villagePlacedObjects)
         {
@@ -4334,7 +4336,7 @@ void Engine::DrawVillagePlayground()
         }
     };
 
-    drawPlacedLayer(VillageMap::Layer::Ground);
+    drawPlacedLayer(VillageObjectLayer::Ground);
 
     Rectangle graveyard = VillageGraveyardWorldRect();
     Rectangle graveyardScreen{ worldOffset.x + graveyard.x, worldOffset.y + graveyard.y, graveyard.width, graveyard.height };
@@ -4378,7 +4380,7 @@ void Engine::DrawVillagePlayground()
         DrawText(poePrompt, (int)(poeScreen.x - promptW * 0.5f), (int)(poeScreen.y + 78.f + poeBob), promptFs, Color{ 212, 194, 255, 255 });
     }
 
-    drawPlacedLayer(VillageMap::Layer::Objects);
+    drawPlacedLayer(VillageObjectLayer::Objects);
 
     for (const VillagePlacedObject& placed : _villagePlacedObjects)
     {
@@ -4454,7 +4456,7 @@ void Engine::DrawVillagePlayground()
     if (_villageBuildMode && !mouseOverUi) DrawVillagePlacementGhost(worldOffset, mouseWorld);
 
     _player.DrawPlayer(_cameraPos);
-    drawPlacedLayer(VillageMap::Layer::Overhead);
+    drawPlacedLayer(VillageObjectLayer::Overhead);
 
     if (!_villageSandboxMode && !_villageBuildMode && CheckCollisionPointRec(_player.GetWorldPos(), VillageGateApproachRect()))
         DrawText("Head north when you are ready", 24, 92, 24, GOLD);
@@ -4481,7 +4483,7 @@ void Engine::DrawVillagePlayground()
             const VillageRuntimeObjectDef& selected = _villageObjectCatalog[_villageActiveObjectIndex];
             DrawText(TextFormat("Selected: %s", selected.name.c_str()), (int)panel.x + 14, (int)panel.y + 84, 16, RAYWHITE);
             const char* selectedCostText = selected.costGold > 0 ? TextFormat("%dg", selected.costGold) : "free";
-            std::string selectedDetail = TextFormat("Cost: %s | Footprint: %dx%d | %s", selectedCostText, selected.cols, selected.rows, VillageObjectRuleLabel(selected.name, selected.isDecoration));
+            std::string selectedDetail = TextFormat("Cost: %s | Footprint: %dx%d | %s", selectedCostText, selected.cols, selected.rows, VillageObjectRuleLabel(selected));
             DrawText(selectedDetail.c_str(), (int)panel.x + 14, (int)panel.y + 104, 15, Fade(RAYWHITE, 0.72f));
         }
 
@@ -4501,11 +4503,11 @@ void Engine::DrawVillagePlayground()
             if (locked) DrawText("locked", (int)(row.x + row.width - 132), (int)row.y + 11, 14, Fade(RAYWHITE, 0.4f));
             else
             {
-                const bool alreadyBuilt = !_villageSandboxMode && VillageObjectIsOneTimeService(entry.name) && VillageHasPlacedObject(entry.name);
+                const bool alreadyBuilt = !_villageSandboxMode && VillageObjectIsOneTimeService(entry) && VillageHasPlacedObject(entry.name);
                 const char* costText = entry.costGold > 0 ? TextFormat("%dg", entry.costGold) : "free";
                 DrawText(costText, (int)(row.x + 170), (int)row.y + 11, 14, GOLD);
                 DrawText(TextFormat("%dx%d", entry.cols, entry.rows), (int)(row.x + 224), (int)row.y + 11, 14, Fade(RAYWHITE, 0.68f));
-                DrawText(alreadyBuilt ? "built" : VillageObjectRuleLabel(entry.name, entry.isDecoration), (int)(row.x + 278), (int)row.y + 11, 14, alreadyBuilt ? Fade(GOLD, 0.78f) : Fade(RAYWHITE, 0.68f));
+                DrawText(alreadyBuilt ? "built" : VillageObjectRuleLabel(entry), (int)(row.x + 278), (int)row.y + 11, 14, alreadyBuilt ? Fade(GOLD, 0.78f) : Fade(RAYWHITE, 0.68f));
             }
         }
         if (_villageObjectCatalog.empty()) DrawText("No saved village objects yet", (int)rows.x + 10, (int)rows.y + 18, 20, Fade(RAYWHITE, 0.75f));
@@ -16458,6 +16460,87 @@ Enemy* Engine::SpawnDungeonGrunt(const EncounterSpawnEntry& entry, Vector2 pos, 
     return spawned;
 }
 
+// Revalidates a reserved reinforcement position immediately before
+// instantiation, using the exact same blocker + minimum-player-distance
+// checks GetDungeonSpawnPos already applies at reservation time (design:
+// "Reserved positions observe existing blocker checks and minimum player
+// distance" / "A reserved spawn is revalidated immediately before
+// instantiation. If invalid, it returns to the reinforcement queue.").
+bool Engine::IsDungeonReinforcementPosStillValid(Vector2 pos, float cellW, float cellH) const
+{
+    const std::vector<Rectangle> blockers = GetDungeonSpawnBlockers(cellW, cellH);
+    const Vector2 playerPos = _player.GetWorldPos();
+    const float minDist = cellW * 4.f;   // matches GetDungeonSpawnPos's own minimum distance
+    const float dx = pos.x - playerPos.x;
+    const float dy = pos.y - playerPos.y;
+    if (dx * dx + dy * dy < minDist * minDist) return false;
+    return IsDungeonEnemySpawnPositionValid(nullptr, pos, cellW, cellH, blockers);
+}
+
+// Reserves 1-2 new pending reinforcement spawns from the front of
+// _dungeonReinforcements when the room is below its simultaneous body
+// target (ReinforcementPacing::SimultaneousBodyTarget) and no telegraph
+// batch is already pending (design: "A new batch begins only when the
+// active body count is below the room's simultaneous target and no spawn
+// telegraph batch is already pending" / "Each batch reserves valid spawn
+// positions before its telegraph begins"). Never calls SpawnDungeonGrunt —
+// entries only instantiate once their telegraph completes (see
+// AdvanceDungeonPendingSpawns).
+void Engine::TryReserveDungeonReinforcementBatch(float cellW, float cellH)
+{
+    if (_dungeonReinforcements.empty()) return;
+    if (!_pendingEnemySpawns.empty()) return;   // a batch's telegraph is already in flight
+
+    const int target = SimultaneousBodyTarget(_roomCombatCapacity.band);
+    const int active = GetActiveEnemyCount();
+    const int batchSize = ReinforcementBatchSize(
+        active, (int)_pendingEnemySpawns.size(), target, (int)_dungeonReinforcements.size());
+    if (batchSize <= 0) return;
+
+    for (int n = 0; n < batchSize; ++n)
+    {
+        const EncounterSpawnEntry entry = _dungeonReinforcements.front();
+        _dungeonReinforcements.pop_front();
+
+        PendingEnemySpawn spawn{};
+        spawn.entry = entry;
+        spawn.worldPos = GetDungeonSpawnPosForRole(entry.role, cellW, cellH);
+        spawn.phase = PendingSpawnPhase::Circle;
+        spawn.timer = 0.f;
+        spawn.smokeEmitted = false;
+        _pendingEnemySpawns.push_back(spawn);
+    }
+}
+
+// Ticks every pending reinforcement's telegraph timer (Circle -> Smoke ->
+// Ready). Entries that reach Ready are revalidated against the same
+// blocker/min-distance checks used at reservation time: if still valid they
+// are instantiated via SpawnDungeonGrunt and removed from the pending
+// collection; if now invalid they are returned to the FRONT of the
+// reinforcement queue and dropped from pending (design: "Failed reservations
+// stay queued and retry later; they do not spawn at an unsafe fallback").
+void Engine::AdvanceDungeonPendingSpawns(float dt, float cellW, float cellH)
+{
+    for (size_t i = 0; i < _pendingEnemySpawns.size(); )
+    {
+        PendingEnemySpawn& spawn = _pendingEnemySpawns[i];
+        AdvancePendingSpawn(spawn, dt);
+
+        if (spawn.phase != PendingSpawnPhase::Ready)
+        {
+            ++i;
+            continue;
+        }
+
+        if (IsDungeonReinforcementPosStillValid(spawn.worldPos, cellW, cellH))
+            SpawnDungeonGrunt(spawn.entry, spawn.worldPos, cellW, cellH);
+        else
+            _dungeonReinforcements.push_front(spawn.entry);
+
+        _pendingEnemySpawns.erase(_pendingEnemySpawns.begin() + (long)i);
+    }
+}
+
 void Engine::SpawnDungeonRoomEnemies()
 {
     if (_dungeonRoomIdx < 0) return;
@@ -16472,6 +16555,7 @@ void Engine::SpawnDungeonRoomEnemies()
     {
         _dungeonEnemiesSpawned = false;
         _dungeonReinforcements.clear();
+        _pendingEnemySpawns.clear();
         ApplyDungeonRoomDoorState(
             _dungeonRoomLayout, _dungeonRoomIdx, _dungeonEntryDoorSide);
         return;
@@ -16521,6 +16605,7 @@ void Engine::SpawnDungeonRoomEnemies()
     {
         _roomHazards.ClearRoom();
         _dungeonReinforcements.clear();
+        _pendingEnemySpawns.clear();
         if (i < 2)
         {
             const int count = (i == 0) ? 2 : 4;
@@ -16692,19 +16777,32 @@ void Engine::SpawnDungeonRoomEnemies()
         _roomPressureCapDbg = encounter.debug.pressureCap;
         _dungeonOpeningCap = encounter.debug.openingBodyCap;
         const int openingCount = static_cast<int>(encounter.opening.size());
-        _dungeonReinforcements = encounter.reinforcements;
+        // Task 4 (Reinforcement Pacing): never open the fight with more bodies
+        // on screen than the room's simultaneous target, even when the
+        // planner's own opening slice is larger — anything bumped out streams
+        // in later as reinforcements (through the normal telegraphed
+        // reservation path) alongside whatever the planner already queued.
+        // Total planned population is unchanged: nothing here is dropped,
+        // only deferred (openingCount + reinforcements.size() stays constant).
+        const int immediateOpeningCount = std::min(openingCount, SimultaneousBodyTarget(_roomCombatCapacity.band));
+        std::deque<EncounterSpawnEntry> overflowReinforcements(
+            encounter.opening.begin() + immediateOpeningCount, encounter.opening.end());
+        overflowReinforcements.insert(overflowReinforcements.end(),
+            encounter.reinforcements.begin(), encounter.reinforcements.end());
+        _dungeonReinforcements = std::move(overflowReinforcements);
         _dungeonReinforcementTimer = Balance::Pressure::kReinforceInterval;
         if (_debug.IsActive())
-            TraceLog(LOG_INFO, "ROOM PRESSURE tier %d: %d/%d (bodies %d, opening %d, reinforcements %d)",
+            TraceLog(LOG_INFO, "ROOM PRESSURE tier %d: %d/%d (bodies %d, opening %d->%d, reinforcements %d)",
                      tierIdx, encounter.debug.totalPressure, encounter.debug.pressureCap,
-                     encounter.debug.plannedPopulation, openingCount, (int)_dungeonReinforcements.size());
+                     encounter.debug.plannedPopulation, openingCount, immediateOpeningCount,
+                     (int)_dungeonReinforcements.size());
 
         // Ancient Castle: spawn in a tight cluster so enemies charge together.
-        if (_currentBiome == Biome::AncientCastle && openingCount > 1)
+        if (_currentBiome == Biome::AncientCastle && immediateOpeningCount > 1)
         {
             Vector2 clusterCenter = GetDungeonSpawnPos(cellW, cellH);
             SpawnDungeonGrunt(encounter.opening[0], clusterCenter, cellW, cellH);
-            for (int n = 1; n < openingCount; n++)
+            for (int n = 1; n < immediateOpeningCount; n++)
             {
                 float   angle = (float)GetRandomValue(0, 628) / 100.f;
                 float   dist  = (float)GetRandomValue(30, 100);
@@ -16717,7 +16815,7 @@ void Engine::SpawnDungeonRoomEnemies()
         }
         else
         {
-            for (int n = 0; n < openingCount; n++)
+            for (int n = 0; n < immediateOpeningCount; n++)
                 SpawnDungeonGrunt(encounter.opening[n],
                                   GetDungeonSpawnPos(cellW, cellH), cellW, cellH);
         }
@@ -16918,6 +17016,7 @@ void Engine::SetPlaytestEnemies(bool enemiesOn)
     for (auto& enemy : _enemies) { enemy->SetActive(false); enemy->Teleport({ -5000.f, -5000.f }); }
     _enemies.clear();
     _dungeonReinforcements.clear();
+    _pendingEnemySpawns.clear();
     _roomClearPending = false;
     ResetEliteRoomRuntime();
 
@@ -20330,6 +20429,7 @@ void Engine::UpdateDungeonRun(float dt)
             {
                 _roomObjectiveComplete = true;
                 _dungeonReinforcements.clear();
+                _pendingEnemySpawns.clear();
                 for (auto& enemy : _enemies)
                     if (enemy->IsActive()) enemy->SetActive(false);
                 _enemyProjectiles.clear();
@@ -20341,7 +20441,8 @@ void Engine::UpdateDungeonRun(float dt)
                     { (float)kVirtualWidth * 0.5f, (float)kVirtualHeight * 0.30f },
                     "HOLDOUT COMPLETE", GOLD, 1.7f);
             }
-            else if (GetActiveEnemyCount() == 0 && _dungeonReinforcements.empty())
+            else if (GetActiveEnemyCount() == 0 && _dungeonReinforcements.empty() &&
+                     _pendingEnemySpawns.empty())
             {
                 const int refillCount = std::clamp(_dungeonOpeningCap / 2, 2, 4);
                 for (int n = 0; n < refillCount; ++n)
@@ -20356,63 +20457,59 @@ void Engine::UpdateDungeonRun(float dt)
             }
         }
 
-        // -- Reinforcement waves (see Balance::Pressure) --------------------------
+        // -- Reinforcement waves (see Balance::Pressure / ReinforcementPacing) ----
         // Queued surplus bodies stream in when the field thins out or the wave
         // timer fires, so late-run populations pressure the player continuously
-        // without opening the fight as an unreadable wall.
+        // without opening the fight as an unreadable wall. Timer/active-count
+        // expiry only makes a batch ELIGIBLE to reserve — TryReserveDungeon-
+        // ReinforcementBatch (via ReinforcementBatchSize) still clamps the
+        // actual reservation to the gap under the room's simultaneous body
+        // target, 1-2 entries at a time, and never starts a new batch while a
+        // previous batch's telegraph is still pending. Reserved entries do not
+        // spawn immediately: they run the purple-circle/smoke telegraph
+        // (AdvanceDungeonPendingSpawns, below) before SpawnDungeonGrunt is
+        // ever called.
         if (_dungeonEnemiesSpawned && !_dungeonReinforcements.empty() && !_dungeonScrolling)
         {
             _dungeonReinforcementTimer -= dt;
             int activeEnemies = GetActiveEnemyCount();
-            bool release = (_dungeonReinforcementTimer <= 0.f) ||
+            bool eligible = (_dungeonReinforcementTimer <= 0.f) ||
                            (activeEnemies <= Balance::Pressure::kReinforceRefillActive);
-            if (release)
+            if (eligible)
             {
-                auto rolePressure = [](EnemyRole role) {
-                    switch (role)
-                    {
-                    case EnemyRole::Support: case EnemyRole::Summoner: return 3;
-                    case EnemyRole::Ranged: case EnemyRole::Tank: case EnemyRole::Assassin:
-                    case EnemyRole::Zoner: case EnemyRole::HeavyRanged: return 2;
-                    default: return 1;
-                    }
-                };
-                int activePressure = 0;
-                for (const auto& enemy : _enemies)
-                    if (enemy->IsActive() && enemy->IsAlive())
-                        activePressure += rolePressure(enemy->GetEncounterRole());
-
-                const int bodySlots = std::max(0, _dungeonOpeningCap - activeEnemies);
-                int pressureSlots = std::max(0, _roomPressureCapDbg
-                                                - _roomHazards.TotalPressureCost() - activePressure);
-                int waveSize = 0;
                 float waveCellW = (float)kVirtualWidth  / (float)RoomLayout::kCols;
                 float waveCellH = (float)kVirtualHeight / (float)RoomLayout::kRows;
-                while (waveSize < bodySlots && !_dungeonReinforcements.empty())
-                {
-                    const EncounterSpawnEntry& entry = _dungeonReinforcements.front();
-                    if (entry.pressureCost > pressureSlots)
-                        break;
-                    SpawnDungeonGrunt(entry, GetDungeonSpawnPos(waveCellW, waveCellH), waveCellW, waveCellH);
-                    pressureSlots -= entry.pressureCost;
-                    _dungeonReinforcements.pop_front();
-                    ++waveSize;
-                }
+                const size_t reservedBefore = _pendingEnemySpawns.size();
+                TryReserveDungeonReinforcementBatch(waveCellW, waveCellH);
+                const int batchSize = (int)(_pendingEnemySpawns.size() - reservedBefore);
                 _dungeonReinforcementTimer = Balance::Pressure::kReinforceInterval;
-                if (waveSize > 0)
+                if (batchSize > 0)
                     _vfx.SpawnFloatingLabel({ (float)kVirtualWidth * 0.5f, (float)kVirtualHeight * 0.30f },
                                             "REINFORCEMENTS!", Color{ 255, 170, 70, 255 }, 1.4f);
                 if (_debug.IsActive())
-                    TraceLog(LOG_INFO, "REINFORCEMENT wave: +%d (queued left %d)",
-                             waveSize, (int)_dungeonReinforcements.size());
+                    TraceLog(LOG_INFO, "REINFORCEMENT batch reserved: +%d (queued left %d, pending %d)",
+                             batchSize, (int)_dungeonReinforcements.size(), (int)_pendingEnemySpawns.size());
             }
+        }
+
+        // Advance any reserved reinforcement telegraphs (Circle -> Smoke ->
+        // Ready). Runs independent of whether a new batch was reserved this
+        // frame, and independent of the queue's own empty/non-empty state
+        // (reserved entries already left the queue) — otherwise a batch's
+        // telegraph could stall mid-sequence once the queue drains.
+        if (!_pendingEnemySpawns.empty() && !_dungeonScrolling)
+        {
+            float waveCellW = (float)kVirtualWidth  / (float)RoomLayout::kCols;
+            float waveCellH = (float)kVirtualHeight / (float)RoomLayout::kRows;
+            AdvanceDungeonPendingSpawns(dt, waveCellW, waveCellH);
         }
 
         // -- Room clear detection -----------------------------------------------
         if (_dungeonEnemiesSpawned)
         {
             SaveDungeonRoomEnemyState();
-            bool allDead = _dungeonReinforcements.empty();   // waves still pending = not cleared
+            // Waves still pending — queued OR mid-telegraph — count as not cleared.
+            bool allDead = _dungeonReinforcements.empty() && _pendingEnemySpawns.empty();
             for (const auto& e : _enemies)
                 if (e->IsActive()) { allDead = false; break; }
             if (_currentEncounterProfile == EncounterProfile::Holdout &&
@@ -21785,9 +21882,10 @@ void Engine::DrawEnemyFacingDebug() const
 
     // Room pressure readout (Balance::Pressure): spent/cap, pending waves,
     // live hazards. Zeroed in non-combat rooms.
-    DrawText(TextFormat("PRESSURE %d / %d   waves %d   hazards %d   shots %d/%d",
+    DrawText(TextFormat("PRESSURE %d / %d   waves %d   telegraphing %d   hazards %d   shots %d/%d",
                         _roomPressureSpent, _roomPressureCapDbg,
-                        (int)_dungeonReinforcements.size(), _roomHazards.ActiveCount(),
+                        (int)_dungeonReinforcements.size(), (int)_pendingEnemySpawns.size(),
+                        _roomHazards.ActiveCount(),
                         (int)_enemyProjectiles.size(),
                         Balance::Pressure::kEnemyProjectileCap[std::clamp(_roomEncounterTier, 0, 2)]),
              20, 150, 20, ORANGE);
