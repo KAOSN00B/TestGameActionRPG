@@ -134,7 +134,8 @@ void LivingBlade::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTar
                 // longer and re-checks next frame rather than falling back to
                 // direct homing (it was already standing still, so this reads
                 // as a natural extra beat, not a stall).
-                bool canCommitDash = !HasEngagementAssignment() || GetEngagementIntent() == EngagementIntent::Commit;
+                bool canCommitDash = !HasEngagementAssignment() ||
+                    (GetEngagementIntent() == EngagementIntent::Commit && _engagementLatch.CanCommit());
                 if (canCommitDash)
                 {
                     _state = BladeState::WindingUp;

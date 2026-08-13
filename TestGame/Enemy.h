@@ -133,7 +133,7 @@ inline Vector2 ComputeEngagementTarget(Vector2 player, Vector2 self, Vector2 all
     // rather than in GameBalance.h — Task 3's scope is approach/positioning.
     constexpr float kRepositionRadius    = 170.f;          // outside melee/collision range
     constexpr float kSupportAnchorRadius = 90.f;            // support hovers near the ally mass
-    constexpr float kScreenBias          = 0.42f;           // 0=at ally, 1=at player; screen sits nearer the player
+    constexpr float kScreenBias          = 0.42f;           // 0=at ally, 1=at player; screen sits nearer the ally, biased toward the player
     constexpr float kAssassinMinOffAngle = 50.f * DEG2RAD;  // never lines up with its own current bearing
 
     if (intent == EngagementIntent::Support && role == EnemyRole::Tank)
