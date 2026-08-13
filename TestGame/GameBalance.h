@@ -367,6 +367,17 @@ namespace Balance::Squad
     inline constexpr float kAssassinFlankDepth       = 150.f;  // aim point past/behind the player
 }
 
+// ── Enemy engagement rhythm (CombatEngagement) ───────────────────────────────
+// Deterministic Commit/Support/Reposition policy: only a limited number of
+// normal enemies may actively commit to an attack at once. Tier index matches
+// Balance::Pressure — 0 = early rooms, 1 = mid, 2 = late (cleared-room count).
+namespace Balance::Rhythm
+{
+    inline constexpr int   kCommittersByTier[3]    = { 2, 3, 3 };
+    inline constexpr int   kSwarmExtraCommitters   = 1;   // fragile swarm-profile bonus slot
+    inline constexpr float kPostCommitRepositionSeconds = 0.65f; // forced reposition after releasing a slot
+}
+
 namespace Balance::DamageNumbers
 {
     inline constexpr int   kVisibleCap      = 32;
