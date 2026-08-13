@@ -606,26 +606,34 @@ void CombatDirector::UpdateEnemyRuntime(const EnemyRuntimeContext& ctx, float dt
 
         // Apply this frame's engagement assignment before Update() so
         // HandleAttack's Commit gate and (from Task 3 onward) positioning see
-        // it immediately. Enemies with no assignment (bosses, or anything
-        // BuildEngagementAssignments dropped as not-alive) fall back to
-        // holding their current position with Reposition intent — see
-        // Enemy::HasEngagementAssignment()/HandleAttack for the matching
-        // legacy-scan fallback on the attack-start gate.
-        auto assignmentIt = engagementById.find(enemy->GetRuntimeId());
-        if (assignmentIt != engagementById.end())
+        // it immediately. Bosses are never in BuildEngagementAssignments'
+        // candidate list (they fight their own fight, not the pack), so they
+        // must be skipped here too — otherwise SetEngagementAssignment would
+        // still run and HasEngagementAssignment() would report true, which
+        // would silently disable a boss's legacy CanTakeAttackSlot fallback
+        // in Enemy::HandleAttack forever (it can never match a Commit
+        // assignment since it's permanently excluded from the candidate
+        // list). Every other enemy with no assignment (anything
+        // BuildEngagementAssignments dropped as not-alive) falls back to
+        // holding its current position with Reposition intent.
+        if (!enemy->IsBoss())
         {
-            const EngagementAssignment& assignment = *assignmentIt->second;
-            constexpr float kEngagementOrbitRadius = 130.f;   // placeholder pending Task 3's ComputeEngagementTarget
-            Vector2 orbitTarget{
-                playerFeet.x + cosf(assignment.orbitAngle) * kEngagementOrbitRadius,
-                playerFeet.y + sinf(assignment.orbitAngle) * kEngagementOrbitRadius
-            };
-            Vector2 target = (assignment.intent == EngagementIntent::Commit) ? playerFeet : orbitTarget;
-            enemy->SetEngagementAssignment(assignment.intent, target);
-        }
-        else
-        {
-            enemy->SetEngagementAssignment(EngagementIntent::Reposition, enemy->GetWorldPos());
+            auto assignmentIt = engagementById.find(enemy->GetRuntimeId());
+            if (assignmentIt != engagementById.end())
+            {
+                const EngagementAssignment& assignment = *assignmentIt->second;
+                constexpr float kEngagementOrbitRadius = 130.f;   // placeholder pending Task 3's ComputeEngagementTarget
+                Vector2 orbitTarget{
+                    playerFeet.x + cosf(assignment.orbitAngle) * kEngagementOrbitRadius,
+                    playerFeet.y + sinf(assignment.orbitAngle) * kEngagementOrbitRadius
+                };
+                Vector2 target = (assignment.intent == EngagementIntent::Commit) ? playerFeet : orbitTarget;
+                enemy->SetEngagementAssignment(assignment.intent, target);
+            }
+            else
+            {
+                enemy->SetEngagementAssignment(EngagementIntent::Reposition, enemy->GetWorldPos());
+            }
         }
 
         enemy->SetHazardZones(ctx.hazards);   // player damage zones to steer around
