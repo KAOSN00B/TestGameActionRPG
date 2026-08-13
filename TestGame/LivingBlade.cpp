@@ -126,8 +126,21 @@ void LivingBlade::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTar
         case BladeState::Resting:
             if (_stateTimer <= 0.f && !controlled)
             {
-                _state = BladeState::WindingUp;
-                _stateTimer = kWindupDuration;
+                // "Fast pass-through commitments followed by a clear recovery
+                // and separation phase." (design doc) — a dash is itself a
+                // Commit, so it now respects the shared commit-slot budget:
+                // only wind up once this Living Blade actually holds this
+                // frame's Commit slot. Otherwise it holds its rest a beat
+                // longer and re-checks next frame rather than falling back to
+                // direct homing (it was already standing still, so this reads
+                // as a natural extra beat, not a stall).
+                bool canCommitDash = !HasEngagementAssignment() || GetEngagementIntent() == EngagementIntent::Commit;
+                if (canCommitDash)
+                {
+                    _state = BladeState::WindingUp;
+                    _stateTimer = kWindupDuration;
+                    _engagementLatch.BeginCommit();
+                }
             }
             break;
 
@@ -136,6 +149,7 @@ void LivingBlade::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTar
             {
                 _state = BladeState::Resting;
                 _stateTimer = kRestDuration;
+                _engagementLatch.EndCommit();
                 break;
             }
             if (_stateTimer <= 0.f)
@@ -175,6 +189,11 @@ void LivingBlade::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTar
                 _state = BladeState::Resting;
                 _stateTimer = kRestDuration;
                 _spinAngle = 0.f;
+                // Pass-through complete — release the Commit slot into its
+                // post-attack recovery window (Balance::Rhythm::
+                // kPostCommitRepositionSeconds) so it can't immediately wind
+                // up again ahead of other enemies waiting on the budget.
+                _engagementLatch.EndCommit();
             }
             break;
         }

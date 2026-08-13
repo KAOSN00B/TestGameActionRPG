@@ -257,14 +257,30 @@ void FlameWisp::Update(float dt, Vector2 heroWorldPos,
 
 Vector2 FlameWisp::PickTeleportSpot() const
 {
-    // Random ring position around the player, clamped inside the room.
     Vector2 playerPos = (_target != nullptr) ? _target->GetFeetWorldPos() : _worldPos;
-    float angle  = (float)GetRandomValue(0, 628) / 100.f;
-    float radius = (float)GetRandomValue((int)_teleportRadiusMin, (int)_teleportRadiusMax);
-    Vector2 spot{
-        playerPos.x + cosf(angle) * radius,
-        playerPos.y + sinf(angle) * radius
-    };
+
+    // "Prioritizes lateral positions and lane control." (design doc) — when
+    // this frame's shared engagement assignment isn't Commit, teleport toward
+    // that lane point (ComputeEngagementTarget's Reposition orbit already
+    // gives a deterministic, changing lane per assignment) instead of a fully
+    // random ring position, so the wisp's fire pressure reads as coming from
+    // a chosen angle rather than a coin flip. Falls back to the previous
+    // random-ring behaviour when no assignment is available (e.g. a caller
+    // that never built per-frame assignments).
+    Vector2 spot;
+    if (HasEngagementAssignment() && GetEngagementIntent() != EngagementIntent::Commit)
+    {
+        spot = GetEngagementTarget();
+    }
+    else
+    {
+        float angle  = (float)GetRandomValue(0, 628) / 100.f;
+        float radius = (float)GetRandomValue((int)_teleportRadiusMin, (int)_teleportRadiusMax);
+        spot = Vector2{
+            playerPos.x + cosf(angle) * radius,
+            playerPos.y + sinf(angle) * radius
+        };
+    }
     spot.x = std::clamp(spot.x, 170.f, (float)kVirtualWidth  - 170.f);
     spot.y = std::clamp(spot.y, 170.f, (float)kVirtualHeight - 170.f);
     return spot;

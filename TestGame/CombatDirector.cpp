@@ -622,12 +622,20 @@ void CombatDirector::UpdateEnemyRuntime(const EnemyRuntimeContext& ctx, float dt
             if (assignmentIt != engagementById.end())
             {
                 const EngagementAssignment& assignment = *assignmentIt->second;
-                constexpr float kEngagementOrbitRadius = 130.f;   // placeholder pending Task 3's ComputeEngagementTarget
-                Vector2 orbitTarget{
-                    playerFeet.x + cosf(assignment.orbitAngle) * kEngagementOrbitRadius,
-                    playerFeet.y + sinf(assignment.orbitAngle) * kEngagementOrbitRadius
-                };
-                Vector2 target = (assignment.intent == EngagementIntent::Commit) ? playerFeet : orbitTarget;
+                // A Commit that is actually in its post-attack recovery window
+                // (locked from a finished attack, not currently mid-swing) is
+                // re-labelled Reposition ONLY for the target computation below —
+                // the stored intent (assignment.intent) stays the real Commit so
+                // Enemy::HandleAttack's slot gate and next frame's
+                // EngagementCandidate::locked still see it as owning its slot
+                // through recovery. See Task 3 plan + PROGRESS.md's "IMPORTANT
+                // FOR TASK 3" note: GetEngagementIntent()==Commit alone covers
+                // both "attacking" and "recovering" (both map to `locked`).
+                bool recoveringFromCommit = (assignment.intent == EngagementIntent::Commit)
+                    && enemy->IsAttackLockedForEngagement() && !enemy->IsCommittedToAttack();
+                EngagementIntent targetIntent = recoveringFromCommit ? EngagementIntent::Reposition : assignment.intent;
+                Vector2 target = ComputeEngagementTarget(playerFeet, enemy->GetWorldPos(),
+                    squadDirective.allyCentroid, enemy->GetEncounterRole(), targetIntent, assignment.orbitAngle);
                 enemy->SetEngagementAssignment(assignment.intent, target);
             }
             else

@@ -29,6 +29,14 @@ public:
     Rectangle GetCollisionRec() const override;
 
     Warchief* AsWarchief() override { return this; }
+    // Support feeds the shared CombatEngagement anchoring logic (Task 3):
+    // ComputeEngagementTarget hovers a non-Tank Support intent near the ally
+    // centroid rather than the player — "anchors near the ally centroid and
+    // avoids becoming the nearest enemy unless isolated" (design doc). It
+    // only pursues/attacks directly once BuildEngagementAssignments' rank-by-
+    // distance selection actually grants it a Commit slot (i.e. it becomes
+    // the closest/most eligible candidate — "unless isolated"). No positioning
+    // code of its own needed; it calls base Enemy::Update() unchanged below.
     EnemyRole GetEncounterRole() const override { return EnemyRole::Support; }
     int       GetSpawnCost()     const override { return 4; }
     const char* GetTuningName() const override { return "Warchief"; }

@@ -202,6 +202,11 @@ void Enemy::ResetForSpawn(Vector2 pos)
     _engagementTarget = Vector2Zero();
     _hasEngagementAssignment = false;
     _swarmProfile = false;
+    _engagementHoldPos = Vector2Zero();
+    _engagementHoldTimer = 0.f;
+    _engagementHoldValid = false;
+    _lockedApproachTarget = Vector2Zero();
+    _approachLineLocked = false;
     // Pooled reuse must never leak a previous life's elite state.
     _eliteEvents.Clear();
     _eliteEventSequence   = 0;
@@ -827,12 +832,71 @@ void Enemy::HandleMovement(float dt, Vector2 navigationTarget, bool hasNavigatio
     if (!usingWaypoints && !hasNavigationTarget)
         targetPos = Vector2Add(playerCenter, _approachOffset);
 
+    // ── Engagement-driven positioning (CombatEngagement / Task 3) ─────────────
+    // CombatDirector assigns Commit/Support/Reposition once per frame and
+    // pre-computes a role-appropriate point via ComputeEngagementTarget. This
+    // enemy is reached here (HandleMovement) only while !_attacking, so
+    // IsCommittedToAttack() is always false in this function — the one
+    // remaining ambiguity is a genuinely APPROACHING Commit (about to attack,
+    // latch not yet locked: keep the existing direct pathing below) versus a
+    // Commit that is actually in its post-attack RECOVERY window (latch still
+    // locked from a finished attack — see IsAttackLockedForEngagement). Only
+    // the latter, plus real Support/Reposition, switch to the shared target.
+    bool engagementRecovering = (_engagementIntent == EngagementIntent::Commit)
+        && IsAttackLockedForEngagement() && !IsCommittedToAttack();
+    bool useEngagementTarget = _hasEngagementAssignment
+        && (_engagementIntent != EngagementIntent::Commit || engagementRecovering);
+
+    if (useEngagementTarget)
+    {
+        // Refresh the held point on a slow timer so per-frame orbit-angle
+        // noise doesn't make the enemy vibrate; it settles on one lane and
+        // holds it for a while (design: "decelerates or holds at its
+        // target"), matching _approachOffset's own re-pick cadence.
+        _engagementHoldTimer -= dt;
+        if (!_engagementHoldValid || _engagementHoldTimer <= 0.f)
+        {
+            _engagementHoldPos = _engagementTarget;
+            _engagementHoldValid = true;
+            _engagementHoldTimer = _engagementHoldDuration;
+        }
+        targetPos = _engagementHoldPos;
+        _approachLineLocked = false;   // not on a Commit approach right now
+    }
+    else
+    {
+        _engagementHoldValid = false;   // fresh hold next time we disengage
+
+        // Slime-style locked approach line: snapshot the first resolved
+        // Commit-approach target and keep walking toward that fixed point
+        // instead of re-tracking the player every frame, until in attack
+        // range (HandleMovement returns early once _attacking starts).
+        if (_hasEngagementAssignment && _engagementIntent == EngagementIntent::Commit &&
+            LocksApproachLineOnCommit() && !_inAttackRange)
+        {
+            if (!_approachLineLocked)
+            {
+                _lockedApproachTarget = targetPos;
+                _approachLineLocked = true;
+            }
+            targetPos = _lockedApproachTarget;
+        }
+        else
+        {
+            _approachLineLocked = false;
+        }
+    }
+
     // ── Squad role steering (see Balance::Squad) ──────────────────────────────
     // Reshapes WHERE this enemy wants to be based on its tactical role and the
     // shared battlefield read. Separation / prop / hazard shaping below still
     // applies on top, so packs flow around obstacles the same way individuals do.
+    // Skipped while useEngagementTarget is driving targetPos: the shared
+    // ComputeEngagementTarget already role-differentiates Support/Tank/
+    // Assassin positioning (screening, anchoring, off-angle) for a non-
+    // committing enemy, so this legacy pack heuristic would just fight it.
     bool holdStandoff = false;
-    if (_squadDirective != nullptr && !_inAttackRange)
+    if (_squadDirective != nullptr && !_inAttackRange && !useEngagementTarget)
     {
         namespace Squad = Balance::Squad;
         float distToPlayerNow = Vector2Distance(_worldPos, playerCenter);
@@ -921,6 +985,21 @@ void Enemy::HandleMovement(float dt, Vector2 navigationTarget, bool hasNavigatio
 
     if (Vector2Length(toPlayer) > 0.01f)
         moveDir = Vector2Normalize(toPlayer);
+
+    // Sporeling-style indirect approach: blend in a perpendicular component
+    // while genuinely closing to attack (not orbiting an engagement target)
+    // so the path curves instead of beelining. No-op for every other type
+    // (GetApproachLateralBias() defaults to 0).
+    {
+        float lateralBias = GetApproachLateralBias();
+        if (lateralBias != 0.f && !useEngagementTarget && !_inAttackRange && Vector2Length(moveDir) > 0.01f)
+        {
+            Vector2 perp{ -moveDir.y, moveDir.x };
+            Vector2 biased = Vector2Add(moveDir, Vector2Scale(perp, lateralBias * _flankSide));
+            if (Vector2Length(biased) > 0.01f)
+                moveDir = Vector2Normalize(biased);
+        }
+    }
 
     // Blend a gentle pull toward this enemy's approach slot so enemies fan out
     // along the path rather than single-filing to the same waypoint cell.
@@ -1035,8 +1114,16 @@ void Enemy::HandleMovement(float dt, Vector2 navigationTarget, bool hasNavigatio
     }
 
     Vector2 oldPos = _worldPos;
-    bool slotAvailable = CanTakeAttackSlot(enemies);
-    bool shouldFlank = _inAttackRange && !slotAvailable;
+    // Legacy proximity-based flank-away-from-attack-range gate. Superseded by
+    // the engagement system whenever an assignment exists this frame: holding
+    // a genuine Commit approach already means this enemy IS the committer (no
+    // need to flank off), and Support/Reposition are already being driven
+    // toward their held engagement point above (useEngagementTarget), so the
+    // player-relative flank offset below would just fight that. Only callers
+    // that never build per-frame assignments (see HasEngagementAssignment()
+    // callers in HandleAttack) still fall back to the old scan.
+    bool slotAvailable = _hasEngagementAssignment ? true : CanTakeAttackSlot(enemies);
+    bool shouldFlank = _inAttackRange && !slotAvailable && !useEngagementTarget;
     bool inAttackRange = _inAttackRange && !shouldFlank;
 
     if (shouldFlank)

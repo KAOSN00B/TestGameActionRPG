@@ -69,6 +69,14 @@ private:
     float   _strafeSign     = 1.f;   // which way to circle inside the band
     float   _strafeSwapTimer = 0.f;
 
+    // "Finds a clear firing lane, plants during its existing aim telegraph,
+    // fires, and relocates before firing again. It does not kite
+    // continuously." (design doc) — the archer now only actively repositions
+    // for this short window right after loosing an arrow; the rest of the
+    // time it plants in its current lane instead of perpetually strafing.
+    float   _relocateTimer  = 0.f;
+    static constexpr float _relocateDuration = 0.55f;
+
     // Tuned by SetWaveScale
     float _drawDurationInst  = 0.65f;
     float _shotCooldownInst  = 2.4f;

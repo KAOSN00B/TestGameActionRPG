@@ -101,6 +101,91 @@ private:
     float _recoveryTimer = 0.f;
 };
 
+// ── Shared engagement positioning (CombatEngagement / Task 3) ────────────────
+// Pure, deterministic geometry: given the player, this enemy, the ally
+// centroid (CombatDirector's SquadDirective::allyCentroid, built once per
+// frame), this enemy's tactical role, the INTENT to compute a target for (see
+// note below — a Commit that is actually in its post-attack recovery window
+// is passed in as Reposition, not Commit), and a deterministic per-frame
+// orbit angle (EngagementAssignment::orbitAngle from BuildEngagementAssignments)
+// — returns the point this enemy should move toward this frame.
+//
+// No raylib textures/assets/RNG, so it is safe to unit test exactly like Task
+// 1's BuildEngagementAssignments. Defined inline (header-only, like
+// EngagementLatch above) so tests never need to link Enemy.cpp's heavy asset
+// dependencies (LoadTexture/PlaySound/CharacterTuningStore/...) — just
+// include Enemy.h.
+//
+// Commit is intentionally a pass-through to the player position: a genuinely
+// approaching/attacking Commit keeps the EXISTING pathfinding/attack-entry
+// logic in Enemy::HandleMovement untouched (see the Task 3 plan's Step 3 —
+// "Commit keeps existing pathfinding and attack entry"). CombatDirector is
+// responsible for re-labelling a Commit that is actually recovering
+// (IsAttackLockedForEngagement() true but IsCommittedToAttack() false) as
+// Reposition before calling this function — see CombatDirector.cpp.
+inline Vector2 ComputeEngagementTarget(Vector2 player, Vector2 self, Vector2 allyCentroid,
+                                        EnemyRole role, EngagementIntent intent, float orbitAngle)
+{
+    if (intent == EngagementIntent::Commit)
+        return player;
+
+    // Positional flavour only (not a damage/pacing lever), so these live here
+    // rather than in GameBalance.h — Task 3's scope is approach/positioning.
+    constexpr float kRepositionRadius    = 170.f;          // outside melee/collision range
+    constexpr float kSupportAnchorRadius = 90.f;            // support hovers near the ally mass
+    constexpr float kScreenBias          = 0.42f;           // 0=at ally, 1=at player; screen sits nearer the player
+    constexpr float kAssassinMinOffAngle = 50.f * DEG2RAD;  // never lines up with its own current bearing
+
+    if (intent == EngagementIntent::Support && role == EnemyRole::Tank)
+    {
+        // Shieldbearer-style screen: sit on the line between the ally it is
+        // protecting (approximated by the ally centroid — CombatDirector does
+        // not currently track a specific per-tank ward) and the player,
+        // biased toward the player so its body actually blocks the lane.
+        return Vector2Lerp(allyCentroid, player, kScreenBias);
+    }
+
+    if (intent == EngagementIntent::Support)
+    {
+        // Ordinary support (Warchief and similar): hover near the pack
+        // rather than the player.
+        Vector2 offset{ cosf(orbitAngle) * kSupportAnchorRadius, sinf(orbitAngle) * kSupportAnchorRadius };
+        return Vector2Add(allyCentroid, offset);
+    }
+
+    // Reposition: hold a lane around the player at a safe radius. Assassins
+    // bias off whatever angle they are already standing at (relative to the
+    // player) so their next lane reads as an off-angle flank rather than
+    // pacing straight toward/away from where they already are.
+    float angle = orbitAngle;
+    if (role == EnemyRole::Assassin)
+    {
+        Vector2 selfFromPlayer = Vector2Subtract(self, player);
+        if (Vector2LengthSqr(selfFromPlayer) > 0.0001f)
+        {
+            float selfAngle = atan2f(selfFromPlayer.y, selfFromPlayer.x);
+            float delta = angle - selfAngle;
+            while (delta > PI)  delta -= 2.f * PI;
+            while (delta < -PI) delta += 2.f * PI;
+
+            if (fabsf(delta) < kAssassinMinOffAngle)
+            {
+                // Too close to directly "in front" of its own current bearing.
+                angle = selfAngle + ((delta >= 0.f) ? kAssassinMinOffAngle : -kAssassinMinOffAngle);
+            }
+            else if (fabsf(fabsf(delta) - PI) < kAssassinMinOffAngle)
+            {
+                // Too close to directly "behind" its own current bearing.
+                float push = (delta >= 0.f) ? -1.f : 1.f;
+                angle = selfAngle + PI + push * kAssassinMinOffAngle;
+            }
+        }
+    }
+
+    Vector2 offset{ cosf(angle) * kRepositionRadius, sinf(angle) * kRepositionRadius };
+    return Vector2Add(player, offset);
+}
+
 // ── Player-made ground hazard (Consecrate, poison pool, corruption pool...) ──
 // Engine rebuilds the active list each frame from its ticking damage zones and
 // shares it with every enemy, so enemies can steer around danger instead of
@@ -433,6 +518,22 @@ public:
     virtual bool IgnoresPropCollisions() const { return false; }
     virtual bool IsBoss() const { return false; }
 
+    // ── Enemy-identity approach hooks (CombatEngagement / Task 3) ────────────
+    // Small, opt-in flags consulted by Enemy::HandleMovement's genuine-Commit
+    // approach (i.e. actually walking in to attack, not Reposition/Support —
+    // see ComputeEngagementTarget above). Both default to "no change" so every
+    // existing type keeps its current approach unless it opts in.
+    //
+    // Slime: "preserves its chosen line rather than continuously tracking
+    // every player movement" — once a Commit approach starts, HandleMovement
+    // snapshots the first resolved target and keeps walking toward that fixed
+    // point instead of re-tracking the player every frame.
+    virtual bool LocksApproachLineOnCommit() const { return false; }
+    // Sporeling: "approaches indirectly" — a small perpendicular blend added
+    // to the direct approach direction while genuinely closing to Commit, so
+    // the path curves instead of beelining. 0 = direct line (default).
+    virtual float GetApproachLateralBias() const { return 0.f; }
+
     // ── Elite signature kits ──────────────────────────────────────────────────
     // The generic elite lunge is gone: signature movement belongs to the elite
     // that was designed for it (Ogre's charge, Stormclub's leap, Venomfang's
@@ -696,6 +797,24 @@ protected:
     bool              _hasEngagementAssignment = false;
     bool              _swarmProfile = false;
     EngagementLatch   _engagementLatch;
+
+    // ── Engagement target consumption (HandleMovement, Task 3) ───────────────
+    // CombatEngagement's orbitAngle is re-derived from a per-frame-incrementing
+    // sequence (see CombatDirector's _engagementSequence), so GetEngagementTarget()
+    // itself is NOT stable frame-to-frame. Rather than chase that per-frame
+    // noise directly (which would read as vibrating instead of holding a lane),
+    // HandleMovement samples it into this held point on a slow timer — the same
+    // pattern _approachOffset already uses for its own re-pick cadence.
+    Vector2 _engagementHoldPos{};
+    float   _engagementHoldTimer = 0.f;
+    bool    _engagementHoldValid = false;
+    static constexpr float _engagementHoldDuration = 1.4f;
+
+    // Slime's LocksApproachLineOnCommit(): the fixed point snapshotted the
+    // first frame a genuine Commit approach begins, held until attack range
+    // or a non-Commit intent breaks the lock.
+    Vector2 _lockedApproachTarget{};
+    bool    _approachLineLocked = false;
 
     bool _bestiaryRecorded = false;   // has this death been counted in the bestiary
     bool _isEliteMiniboss = false;

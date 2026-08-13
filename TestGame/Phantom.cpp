@@ -79,6 +79,7 @@ void Phantom::ResetForSpawn(Vector2 pos)
     _phaseTimer = kTangibleDuration + (float)GetRandomValue(0, 80) / 100.f;   // desync packs
     _bobTimer   = (float)GetRandomValue(0, 628) / 100.f;
     _biteCooldown = 1.0f;
+    _bitThisCycle = false;
 
     _texture   = _idleAnim;
     _height    = _texture.height;
@@ -128,6 +129,15 @@ void Phantom::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTarget*
             {
                 _phased = !_phased;
                 _phaseTimer = _phased ? kPhasedDuration : kTangibleDuration;
+                // Going phased again ends this ambush turn — release the
+                // engagement Commit slot into its post-attack recovery window
+                // (only if a bite actually landed this tangible window; see
+                // _bitThisCycle's comment).
+                if (_phased && _bitThisCycle)
+                {
+                    _engagementLatch.EndCommit();
+                    _bitThisCycle = false;
+                }
             }
         }
 
@@ -151,6 +161,16 @@ void Phantom::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTarget*
                     Vector2Scale(Vector2Normalize(toPlayer), Balance::Squad::kAssassinFlankDepth));
             }
 
+            // "Seeks an off-angle, commits to an ambush, then retreats or
+            // repositions after the attack." (design doc) — while this
+            // Phantom is not holding this frame's engagement Commit slot, aim
+            // for the shared off-angle point (ComputeEngagementTarget's
+            // Assassin-role bias) instead of the player/flank-past-player
+            // line, so a Phantom whose turn hasn't come up drifts to a new
+            // angle and waits there rather than still homing in.
+            if (HasEngagementAssignment() && GetEngagementIntent() != EngagementIntent::Commit)
+                driftTarget = GetEngagementTarget();
+
             Vector2 toDriftTarget = Vector2Subtract(driftTarget, _worldPos);
             if (Vector2Length(toDriftTarget) > 0.01f)
             {
@@ -160,11 +180,20 @@ void Phantom::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTarget*
             }
         }
 
-        // Bite while tangible and in range — simple touch attack.
+        // Bite while tangible and in range — simple touch attack. Gated on
+        // holding this frame's engagement Commit slot (mirrors
+        // Enemy::HandleAttack's HasEngagementAssignment() fallback pattern)
+        // so Phantoms respect the shared commit-slot budget instead of every
+        // tangible Phantom biting simultaneously regardless of assignment.
+        bool canCommitBite = HasEngagementAssignment()
+            ? (GetEngagementIntent() == EngagementIntent::Commit && _engagementLatch.CanCommit())
+            : true;
         if (!_phased && !controlled && dist < kBiteRange && _biteCooldown <= 0.f &&
-            _target->IsAlive())
+            canCommitBite && _target->IsAlive())
         {
             _biteCooldown = kBiteCooldown;
+            _engagementLatch.BeginCommit();
+            _bitThisCycle = true;
             _target->TakeDamage((int)_attackPower, _worldPos);
             PlayAttackSound();
         }

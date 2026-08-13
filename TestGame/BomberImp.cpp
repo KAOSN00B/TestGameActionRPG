@@ -127,8 +127,22 @@ void BomberImp::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTarge
     {
         if (!controlled)
         {
+            // "Searches for a useful throw lane, commits to a bomb action,
+            // then relocates." (design doc) — while not holding this frame's
+            // engagement Commit slot, accelerate toward the shared lane point
+            // instead of the player directly, so a non-committing imp reads
+            // as searching for an angle rather than beelining in lockstep
+            // with every other imp. The fuse trigger below always still uses
+            // real distance to the player (see `dist`) — an imp that isn't
+            // "due" for its bomb run is still dangerous at point-blank range.
+            Vector2 seekAnchor = heroWorldPos;
+            if (HasEngagementAssignment() && GetEngagementIntent() != EngagementIntent::Commit)
+                seekAnchor = GetEngagementTarget();
+            Vector2 toAnchor = Vector2Subtract(seekAnchor, _worldPos);
+            float distToAnchor = Vector2Length(toAnchor);
+
             // Accelerating pursuit with a wavy flight path.
-            Vector2 desired = (dist > 0.01f) ? Vector2Scale(toPlayer, 1.f / dist) : Vector2{ 1.f, 0.f };
+            Vector2 desired = (distToAnchor > 0.01f) ? Vector2Scale(toAnchor, 1.f / distToAnchor) : Vector2{ 1.f, 0.f };
             float accel = HasWarAura() ? kAcceleration * kWarAuraSpeedMultiplier : kAcceleration;
             _flyVelocity = Vector2Add(_flyVelocity, Vector2Scale(desired, accel * dt));
             float maxSpeed = HasWarAura() ? kMaxFlySpeed * kWarAuraSpeedMultiplier : kMaxFlySpeed;

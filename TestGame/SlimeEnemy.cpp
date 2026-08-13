@@ -122,6 +122,12 @@ void SlimeEnemy::ResetForSpawn(Vector2 pos)
         _attackBoxWidth    = 36.f;
         _attackBoxHeight   = 50.f;
         _attackBoxOffsetX  = 36.f;
+        // Fast, one-HP, and swarms the player (see class doc comment) — the
+        // clearest "fragile swarm-profile" candidate in the roster for
+        // BuildEngagementAssignments' one-extra-committer bonus slot in swarm
+        // encounters (Balance::Rhythm::kSwarmExtraCommitters). Big slimes are
+        // tankier space-takers, not fragile, so they stay unmarked.
+        SetSwarmProfile(true);
     }
 
     _texture   = _idleAnim;

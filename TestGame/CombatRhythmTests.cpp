@@ -1,6 +1,7 @@
 #include "CombatEngagement.h"
 
 #include <cassert>
+#include <cmath>
 
 namespace
 {
@@ -279,6 +280,115 @@ int main()
     //     brand-new pool slot), GetRuntimeId() is therefore guaranteed stable
     //     across every pooled life of that object, and unique across distinct
     //     objects (the counter never resets or repeats within a process).
+
+    // ── Task 3: ComputeEngagementTarget — shared role-aware positioning ─────
+    // Pure geometry, defined inline in Enemy.h (see its comment for why —
+    // header-only avoids needing to link Enemy.cpp's heavy raylib/asset
+    // dependencies just to test this function). No RNG, no textures: testable
+    // exactly like BuildEngagementAssignments above. CombatEngagement.h
+    // already includes Enemy.h (for EnemyRole/EngagementIntent), so this
+    // function is already in scope here without a new include.
+    {
+        constexpr float kMeleeCollisionRange = 120.f;   // representative attack/collision radius
+
+        Vector2 player{ 500.f, 500.f };
+        Vector2 self{ 400.f, 500.f };
+        Vector2 allyCentroid{ 450.f, 450.f };
+
+        // Reposition stays outside collision/engagement range — not
+        // coincident with the player.
+        Vector2 repoTarget = ComputeEngagementTarget(player, self, allyCentroid,
+            EnemyRole::Ranged, EngagementIntent::Reposition, 0.f);
+        assert(Vector2Distance(repoTarget, player) > kMeleeCollisionRange);
+
+        // Tank/Shieldbearer-role Support screens between the ally and the
+        // player: strictly between the two endpoints along that segment, and
+        // essentially ON the segment (negligible perpendicular deviation).
+        {
+            Vector2 tankTarget = ComputeEngagementTarget(player, self, allyCentroid,
+                EnemyRole::Tank, EngagementIntent::Support, 1.2f);
+            Vector2 segment = Vector2Subtract(player, allyCentroid);
+            float segLenSq = Vector2LengthSqr(segment);
+            assert(segLenSq > 0.0001f);
+            Vector2 toTarget = Vector2Subtract(tankTarget, allyCentroid);
+            float t = Vector2DotProduct(toTarget, segment) / segLenSq;
+            assert(t > 0.05f && t < 0.95f);
+            Vector2 projected = Vector2Add(allyCentroid, Vector2Scale(segment, t));
+            assert(Vector2Distance(tankTarget, projected) < 1.f);
+        }
+
+        // Support-role (non-tank) anchors near the ally centroid rather than
+        // the player.
+        {
+            Vector2 supportTarget = ComputeEngagementTarget(player, self, allyCentroid,
+                EnemyRole::Support, EngagementIntent::Support, 2.3f);
+            assert(Vector2Distance(supportTarget, allyCentroid) < 150.f);
+            assert(Vector2Distance(supportTarget, player) > Vector2Distance(allyCentroid, player) - 150.f);
+        }
+
+        // Assassin-role Reposition picks an off-angle target: the direction
+        // from the player to the new target is never nearly parallel or
+        // nearly antiparallel to the direction from the player to the
+        // enemy's OWN current position — i.e. not directly in front of or
+        // behind its own existing bearing.
+        {
+            Vector2 assassinSelf{ 700.f, 500.f };   // due east of the player
+            float testAngles[4] = { 0.f, PI, 0.001f, PI - 0.001f };
+            for (float testOrbitAngle : testAngles)
+            {
+                Vector2 assassinTarget = ComputeEngagementTarget(player, assassinSelf, allyCentroid,
+                    EnemyRole::Assassin, EngagementIntent::Reposition, testOrbitAngle);
+                Vector2 selfFromPlayer = Vector2Normalize(Vector2Subtract(assassinSelf, player));
+                Vector2 targetFromPlayer = Vector2Normalize(Vector2Subtract(assassinTarget, player));
+                float dot = Vector2DotProduct(selfFromPlayer, targetFromPlayer);
+                assert(dot < 0.95f && dot > -0.95f);
+            }
+        }
+
+        // Ranged-role Reposition changes lanes across different orbit angles
+        // instead of converging on one fixed retreat point every call (no
+        // endless-retreat regression).
+        {
+            Vector2 rangedA = ComputeEngagementTarget(player, self, allyCentroid,
+                EnemyRole::Ranged, EngagementIntent::Reposition, 0.f);
+            Vector2 rangedB = ComputeEngagementTarget(player, self, allyCentroid,
+                EnemyRole::Ranged, EngagementIntent::Reposition, PI * 0.5f);
+            Vector2 rangedC = ComputeEngagementTarget(player, self, allyCentroid,
+                EnemyRole::Ranged, EngagementIntent::Reposition, PI);
+            assert(Vector2Distance(rangedA, rangedB) > 50.f);
+            assert(Vector2Distance(rangedB, rangedC) > 50.f);
+            assert(Vector2Distance(rangedA, rangedC) > 50.f);
+        }
+
+        // Commit is a pass-through to the player position — existing
+        // pathfinding/attack-entry in Enemy::HandleMovement owns the actual
+        // approach, this helper is not consulted for a genuine Commit.
+        {
+            Vector2 commitTarget = ComputeEngagementTarget(player, self, allyCentroid,
+                EnemyRole::Grunt, EngagementIntent::Commit, 0.75f);
+            assert(commitTarget.x == player.x && commitTarget.y == player.y);
+        }
+
+        // Coincident/degenerate inputs (player == self == allyCentroid, zero
+        // orbit angle) must never produce NaN/Inf — no unguarded normalize of
+        // a zero-length vector, across every role/intent combination.
+        {
+            Vector2 origin{ 0.f, 0.f };
+            EnemyRole roles[5] = { EnemyRole::Grunt, EnemyRole::Tank, EnemyRole::Support,
+                                    EnemyRole::Assassin, EnemyRole::Ranged };
+            EngagementIntent intents[3] = { EngagementIntent::Commit, EngagementIntent::Support,
+                                             EngagementIntent::Reposition };
+            for (EnemyRole role : roles)
+            {
+                for (EngagementIntent intent : intents)
+                {
+                    Vector2 degenerate = ComputeEngagementTarget(origin, origin, origin, role, intent, 0.f);
+                    assert(std::isfinite(degenerate.x));
+                    assert(std::isfinite(degenerate.y));
+                }
+            }
+        }
+    }
 
     return 0;
 }

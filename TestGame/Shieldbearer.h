@@ -30,6 +30,15 @@ public:
     void PlayDeathSound() override;
 
     Shieldbearer* AsShieldbearer() override { return this; }
+    // Tank feeds the shared CombatEngagement screening logic (Task 3):
+    // ComputeEngagementTarget seats a Tank-role Support intent on the line
+    // between the ally centroid and the player, biased toward the player —
+    // "occupying the line between that ally and the player" (design doc).
+    // Shieldbearer needs no positioning code of its own; it inherits base
+    // Enemy::HandleMovement's engagement consumption unchanged. It commits
+    // offensively (chases/attacks normally) whenever BuildEngagementAssignments
+    // grants it a Commit slot, i.e. "when its formation breaks or a slot is
+    // available."
     EnemyRole GetEncounterRole() const override { return EnemyRole::Tank; }
     int       GetSpawnCost()     const override { return 3; }
     const char* GetTuningName() const override { return "Shieldbearer"; }

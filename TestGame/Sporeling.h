@@ -27,6 +27,14 @@ public:
     Sporeling* AsSporeling() override { return this; }
     const char* GetTuningName() const override { return "Sporeling"; }
 
+    // "Approaches indirectly ... does not lead the initial rush." (design doc)
+    // A curved approach path reads as more deliberate/wary than a beeline.
+    // Role deliberately stays the default Grunt (not reclassified to Zoner)
+    // to avoid rippling into UsesAttackLunge()/squad steering — the "does not
+    // lead the rush" flavour otherwise rides on the shared Reposition/hold
+    // behaviour every non-committing enemy now gets (Enemy::HandleMovement).
+    float GetApproachLateralBias() const override { return 0.35f; }
+
     void PlayAttackSound() override;
 
     // Radius of the poison cloud left on death (read by Engine when spawning it).

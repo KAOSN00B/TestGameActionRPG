@@ -52,6 +52,13 @@ private:
     float _phaseTimer  = 0.f;
     float _bobTimer    = 0.f;
     float _biteCooldown = 0.f;
+    // Tracks whether this tangible window actually landed a bite, so the
+    // engagement Commit slot (see Update) is only released back into its
+    // recovery window when it was genuinely held — mirrors
+    // Enemy::ReleaseAttackCommitment's own "only if an attack was actually in
+    // progress" guard, which Phantom can't reuse directly since it never sets
+    // the shared _attacking flag.
+    bool  _bitThisCycle = false;
 
     static constexpr float kTangibleDuration = 2.2f;
     static constexpr float kPhasedDuration   = 1.6f;

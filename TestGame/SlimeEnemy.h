@@ -37,6 +37,11 @@ public:
     SlimeSize   GetSize() const { return _size; }
     bool        IsBig()   const { return _size == SlimeSize::Big; }
 
+    // "Advances slowly and directly as a space-taker. Once committed, it
+    // preserves its chosen line rather than continuously tracking every
+    // player movement." (design doc) — see Enemy::LocksApproachLineOnCommit.
+    bool LocksApproachLineOnCommit() const override { return true; }
+
     void PlayAttackSound() override;
 
 private:

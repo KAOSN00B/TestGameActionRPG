@@ -113,6 +113,7 @@ void SkeletonArcher::ResetForSpawn(Vector2 pos)
     _fireDirection = Vector2Zero();
     _strafeSign    = (GetRandomValue(0, 1) == 0) ? -1.f : 1.f;
     _strafeSwapTimer = (float)GetRandomValue(150, 320) / 100.f;
+    _relocateTimer   = 0.f;
 
     _drawDurationInst = 0.65f;
     _shotCooldownInst = 2.4f;
@@ -230,6 +231,7 @@ void SkeletonArcher::Update(float dt, Vector2 heroWorldPos,
                     : Vector2{ _rightLeft >= 0.f ? 1.f : -1.f, 0.f };
                 _drawingBow   = false;
                 _shotCooldown = _shotCooldownInst;
+                _relocateTimer = _relocateDuration;   // relocate once, then plant again
                 SetIdleAnimation(true);
             }
         }
@@ -247,6 +249,9 @@ void SkeletonArcher::HandleKiteMovement(float dt, const std::vector<Vector2>& pr
 {
     if (_target == nullptr || _dying)
         return;
+
+    if (_relocateTimer > 0.f)
+        _relocateTimer -= dt;
 
     if (_relentlessFire)
     {
@@ -290,10 +295,30 @@ void SkeletonArcher::HandleKiteMovement(float dt, const std::vector<Vector2>& pr
     {
         moveDir = playerDir;
     }
+    else if (_relocateTimer > 0.f)
+    {
+        // Brief relocation window right after firing: find a new lane instead
+        // of settling back where it just stood. Prefer this frame's shared
+        // engagement point (already lane/off-angle aware — see
+        // ComputeEngagementTarget) when one is assigned; fall back to the
+        // plain lateral strafe otherwise.
+        if (HasEngagementAssignment() && GetEngagementIntent() != EngagementIntent::Commit)
+        {
+            Vector2 toLane = Vector2Subtract(GetEngagementTarget(), _worldPos);
+            moveDir = (Vector2Length(toLane) > 0.01f)
+                ? Vector2Normalize(toLane)
+                : Vector2{ -playerDir.y * _strafeSign, playerDir.x * _strafeSign };
+        }
+        else
+        {
+            moveDir = Vector2{ -playerDir.y * _strafeSign, playerDir.x * _strafeSign };
+        }
+    }
     else
     {
-        // Inside the comfort band — pure strafe.
-        moveDir = Vector2{ -playerDir.y * _strafeSign, playerDir.x * _strafeSign };
+        // Inside the comfort band and not relocating — plant. "Does not kite
+        // continuously": no more perpetual strafing once it has a good lane.
+        moveDir = Vector2Zero();
     }
 
     // Prop repulsion so archers slide around pillars instead of hugging them.
