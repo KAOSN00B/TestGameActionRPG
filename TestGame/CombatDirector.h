@@ -103,6 +103,16 @@ struct EnemyRuntimeContext
     // Player-made damage zones enemies steer around (see Enemy::SetHazardZones).
     const std::vector<HazardZone>* hazards = nullptr;
     std::vector<std::unique_ptr<Enemy>>* enemies = nullptr;
+    // ── Engagement policy inputs (CombatEngagement) ───────────────────────────
+    // Encounter tier (0 early / 1 mid / 2 late — matches the same tier index
+    // SpawnEnemies derives from depth, see CombatDirector.cpp) and whether this
+    // is a fragile-swarm encounter (grants one bonus Commit slot to swarm-
+    // profile enemies only — see Enemy::SetSwarmProfile). Neither current
+    // Engine.cpp call site sets these yet, so they default to the safest early-
+    // game values (tier 0, no swarm) until a later task wires real per-room
+    // tier/swarm detection through to this struct.
+    int  tier = 0;
+    bool swarmEncounter = false;
     std::vector<CyclopsLaserProjectile>* cyclopsLasers = nullptr;
     std::vector<LavaBallProjectile>* lavaBalls = nullptr;
     std::vector<EnemyProjectile>* enemyProjectiles = nullptr;   // arrows + fire bolts
@@ -195,6 +205,11 @@ private:
     // pattern above because UpdateEnemyRuntime is const.)
     mutable std::array<EliteAttackZone, Balance::Elite::kSignatureZoneCapacity> _eliteZones{};
     mutable std::uint32_t _eliteZoneSequence = 0;
+    // Deterministic tie-break/orbit seed handed to BuildEngagementAssignments
+    // each frame (see UpdateEnemyRuntime). Incremented once per call — not
+    // RNG, just a counter, so orbit angles vary frame-to-frame without needing
+    // raylib's random source in a supposedly pure policy call.
+    mutable std::uint64_t _engagementSequence = 0;
     mutable int _eliteZonesDropped = 0;
     mutable bool _eliteImpactFeedbackThisFrame = false;   // one shake+sound per cast
 };

@@ -205,5 +205,80 @@ int main()
         }
     }
 
+    // ── Task 2: EngagementLatch — stable Commit-slot ownership ──────────────
+    // BeginCommit() locks ownership (CanCommit() == false); EndCommit(0.65)
+    // transitions into the post-attack recovery countdown (still ineligible
+    // immediately after); ticking short of the full duration stays ineligible;
+    // crossing the total duration restores eligibility. See Enemy.h for the
+    // full EngagementLatch definition (it lives there, not CombatEngagement.h,
+    // to avoid a circular include — see the comment at the top of this file's
+    // sibling CombatEngagement.h).
+    {
+        EngagementLatch latch;
+        assert(latch.CanCommit() == true);   // fresh latch starts eligible
+
+        latch.BeginCommit();
+        assert(latch.CanCommit() == false);
+
+        latch.EndCommit(0.65f);
+        assert(latch.CanCommit() == false);   // recovery just started
+
+        latch.Update(0.64f);
+        assert(latch.CanCommit() == false);   // still short of 0.65s total
+
+        latch.Update(0.02f);   // 0.64 + 0.02 = 0.66s >= 0.65s
+        assert(latch.CanCommit() == true);
+
+        // A second commit/recovery cycle behaves identically (no leftover
+        // state from the first cycle).
+        latch.BeginCommit();
+        assert(latch.CanCommit() == false);
+        latch.EndCommit(0.65f);
+        latch.Update(0.30f);
+        assert(latch.CanCommit() == false);
+        latch.Update(0.30f);
+        assert(latch.CanCommit() == false);   // 0.60s total, still short
+        latch.Update(0.05f);
+        assert(latch.CanCommit() == true);    // 0.65s total, eligible again
+
+        // Reset() hard-clears both the lock and any in-progress recovery —
+        // used by Enemy::ResetForSpawn on pooled reuse so a fresh spawn never
+        // inherits a previous pooled life's recovery countdown.
+        EngagementLatch pooled;
+        pooled.BeginCommit();
+        pooled.EndCommit(0.65f);
+        assert(pooled.CanCommit() == false);
+        pooled.Reset();
+        assert(pooled.CanCommit() == true);
+    }
+
+    // ── Task 2: Enemy::GetRuntimeId() / pooling stability ───────────────────
+    // NOT covered by a literal test here: constructing a real Enemy requires
+    // EnsureSharedResourcesLoaded() (raylib texture/sound loading via
+    // LoadTexture/LoadSound), which needs a live raylib graphics/audio context
+    // (InitWindow/InitAudioDevice). This standalone assert-based test binary
+    // links no raylib.lib and opens no window (matching the existing precedent
+    // in this codebase: EncounterPlannerTests.cpp and CombatSystemsTests.cpp
+    // both avoid constructing real Enemy/Character objects for the same
+    // reason). Forcing a real Enemy construction here would require pulling in
+    // the full raylib runtime and asset files, which is out of scope for a
+    // fast, non-rendering unit test.
+    //
+    // Instead, the runtime-id stability contract is verified by inspection:
+    //   - Enemy::_runtimeId is assigned exactly once, from a monotonically
+    //     increasing counter, in the Enemy(Vector2) constructor (Enemy.cpp).
+    //   - Enemy::ResetForSpawn(Vector2) — the shared pooled-reuse reset path
+    //     called on every respawn from the object pool — does NOT assign to
+    //     _runtimeId anywhere in its body; it only resets _engagementLatch,
+    //     _engagementIntent, _engagementTarget, _hasEngagementAssignment, and
+    //     _swarmProfile (see the block immediately after `_damageApplied =
+    //     false;`).
+    //   - Since a pooled enemy is reused via `enemy->ResetForSpawn(pos)` on
+    //     the SAME C++ object (never re-constructed — see Engine.cpp's spawn
+    //     helpers, which only call `make_unique<Enemy>(pos)` + `Init()` for a
+    //     brand-new pool slot), GetRuntimeId() is therefore guaranteed stable
+    //     across every pooled life of that object, and unique across distinct
+    //     objects (the counter never resets or repeats within a process).
+
     return 0;
 }

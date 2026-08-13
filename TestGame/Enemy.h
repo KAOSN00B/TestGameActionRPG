@@ -47,6 +47,60 @@ enum class EnemyRole
     Grunt, Charger, Ranged, Tank, Support, Assassin, Zoner, Summoner, HeavyRanged, Boss
 };
 
+// ── Engagement intent (CombatEngagement policy) ───────────────────────────────
+// What CombatDirector's per-frame engagement policy (see CombatEngagement.h)
+// wants this enemy doing right now. Defined here (not in CombatEngagement.h)
+// because Enemy stores one by value and CombatEngagement.h already includes
+// Enemy.h to reuse EnemyRole — including it back the other way would be a
+// circular header dependency. CombatEngagement.h reuses this definition the
+// same way it reuses EnemyRole.
+enum class EngagementIntent
+{
+    Commit,
+    Support,
+    Reposition
+};
+
+// ── Engagement latch (stable Commit-slot ownership) ───────────────────────────
+// Small, self-contained per-enemy runtime companion to the CombatEngagement
+// policy: enforces that an enemy which starts an attack keeps its Commit slot
+// through the attack AND a short recovery window afterward, so a fresh
+// per-frame BuildEngagementAssignments() re-scan cannot displace it mid-turn.
+// Lives in Enemy.h (rather than CombatEngagement.h, which is a pure
+// data-in/data-out policy library with no runtime state of its own) for the
+// same circular-include reason as EngagementIntent above.
+class EngagementLatch
+{
+public:
+    // Attack just started — locks ownership; CanCommit() becomes false.
+    void BeginCommit() { _committed = true; _recoveryTimer = 0.f; }
+
+    // Attack just ended — releases the lock but starts a recovery countdown;
+    // CanCommit() stays false until `recoverySeconds` worth of Update(dt) have
+    // elapsed. Defaults to Balance::Rhythm::kPostCommitRepositionSeconds.
+    void EndCommit(float recoverySeconds = Balance::Rhythm::kPostCommitRepositionSeconds)
+    {
+        _committed = false;
+        _recoveryTimer = recoverySeconds;
+    }
+
+    // Ticks the recovery countdown. Harmless (no-op-ish) while still mid-attack
+    // (BeginCommit called without a matching EndCommit yet) since the timer
+    // only represents post-attack recovery, not the attack itself.
+    void Update(float dt) { if (_recoveryTimer > 0.f) _recoveryTimer -= dt; }
+
+    // False while locked (mid-attack) or still recovering; true once eligible
+    // to request a fresh Commit slot.
+    bool CanCommit() const { return !_committed && _recoveryTimer <= 0.f; }
+
+    // Hard reset for pooled reuse — no lingering recovery from a previous life.
+    void Reset() { _committed = false; _recoveryTimer = 0.f; }
+
+private:
+    bool  _committed     = false;
+    float _recoveryTimer = 0.f;
+};
+
 // ── Player-made ground hazard (Consecrate, poison pool, corruption pool...) ──
 // Engine rebuilds the active list each frame from its ticking damage zones and
 // shares it with every enemy, so enemies can steer around danger instead of
@@ -111,6 +165,42 @@ public:
     // True while the attack animation is committed — read by CombatDirector to
     // detect "someone already has the player engaged" for the squad directive.
     bool IsCommittedToAttack() const { return _attacking; }
+
+    // ── Stable engagement commitment (CombatEngagement integration) ──────────
+    // Stable per-instance id, assigned once (constructor) and RETAINED across
+    // pooling/reuse — ResetForSpawn never touches it. Lets CombatDirector match
+    // this frame's EngagementAssignment back to the same enemy next frame even
+    // though _worldPos/role/etc. all change.
+    uint64_t GetRuntimeId() const { return _runtimeId; }
+
+    // Set once per frame by CombatDirector::UpdateEnemyRuntime (before Update)
+    // from BuildEngagementAssignments' output. `target` uses the same Vector2
+    // convention as other movement targets on this class (see _approachOffset);
+    // consuming it for actual positioning is Task 3's ComputeEngagementTarget.
+    void SetEngagementAssignment(EngagementIntent intent, Vector2 target)
+    {
+        _engagementIntent = intent;
+        _engagementTarget = target;
+        _hasEngagementAssignment = true;
+    }
+    EngagementIntent GetEngagementIntent() const { return _engagementIntent; }
+    Vector2 GetEngagementTarget() const { return _engagementTarget; }
+    // True while this enemy owns its Commit slot through attack + recovery —
+    // becomes next frame's EngagementCandidate::locked input. Equivalent to
+    // "the latch says not eligible to (re)commit yet".
+    bool IsAttackLockedForEngagement() const { return !_engagementLatch.CanCommit(); }
+    // Whether SetEngagementAssignment has been called for this enemy on the
+    // CURRENT run (reset to false on every pooled respawn). Used by HandleAttack
+    // to fall back to the legacy CanTakeAttackSlot scan for any caller that
+    // never builds per-frame assignments (see HandleAttack for details).
+    bool HasEngagementAssignment() const { return _hasEngagementAssignment; }
+
+    // Fragile swarm-profile flag consumed by EngagementCandidate::swarm (the
+    // one-extra-committer bonus slot in a swarm encounter). Plumbing only in
+    // this task — defaults false; classifying which enemy types "are" swarm-
+    // profile belongs to whichever code composes swarm encounters.
+    void SetSwarmProfile(bool swarm) { _swarmProfile = swarm; }
+    bool IsSwarmProfile() const { return _swarmProfile; }
 
     // ── Facing & directional checks (see Balance::Facing) ─────────────────────
     // Sprites face horizontally, so the forward vector is {facingSign, 0}. These
@@ -530,6 +620,13 @@ protected:
     void HandleAttack(const std::vector<std::unique_ptr<Enemy>>& enemies);
     void PickApproachOffset();
     bool CanTakeAttackSlot(const std::vector<std::unique_ptr<Enemy>>& enemies) const;
+    // Single choke point for every "_attacking = false" transition EXCEPT the
+    // pooled-reuse hard reset in ResetForSpawn (which resets the whole latch
+    // instead, with no recovery countdown). Releases the engagement Commit
+    // slot into its post-attack recovery window whenever an attack was
+    // actually in progress (natural end, target died, forced-push/impulse
+    // interruption) so the latch can never get stuck permanently locked.
+    void ReleaseAttackCommitment();
     void UpdateBurnPanic(float dt);
     void UpdateBurns(float dt);
     void UpdateElectricCharge(float dt);
@@ -588,6 +685,18 @@ protected:
     Color _pitFallTint = WHITE;
     static constexpr float kPitFallDuration = 0.20f;
     std::uint64_t _combatId = 0;
+
+    // ── Stable engagement commitment state (see public accessors above) ──────
+    // _runtimeId is assigned ONCE in the constructor and is never touched by
+    // ResetForSpawn — it must survive pooled reuse so CombatDirector can keep
+    // matching this C++ object across frames/lives.
+    std::uint64_t    _runtimeId = 0;
+    EngagementIntent  _engagementIntent = EngagementIntent::Reposition;
+    Vector2           _engagementTarget{};
+    bool              _hasEngagementAssignment = false;
+    bool              _swarmProfile = false;
+    EngagementLatch   _engagementLatch;
+
     bool _bestiaryRecorded = false;   // has this death been counted in the bestiary
     bool _isEliteMiniboss = false;
     bool _isInvulnerable  = false;   // bodyguard shield (engine-driven)

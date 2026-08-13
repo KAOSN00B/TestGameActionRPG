@@ -171,6 +171,7 @@
     <ClCompile Include="Cyclops.cpp" />
     <ClCompile Include="CyclopsLaserProjectile.cpp" />
     <ClCompile Include="CombatDirector.cpp" />
+    <ClCompile Include="CombatEngagement.cpp" />
     <ClCompile Include="ContentDocument.cpp" />
     <ClCompile Include="ContentTypes.cpp" />
     <ClCompile Include="ContentSerializers.cpp" />
@@ -213,7 +214,6 @@
     <ClCompile Include="CharacterAnimator.cpp" />
     <ClCompile Include="AttackEditor.cpp" />
     <ClCompile Include="MapEditor.cpp" />
-    <ClCompile Include="VillageMap.cpp" />
     <ClCompile Include="VillageAssetData.cpp" />
     <ClCompile Include="AttackTuning.cpp" />
     <ClCompile Include="CellPickup.cpp" />
@@ -276,6 +276,7 @@
     <ClInclude Include="BaseCharacter.h" />
     <ClInclude Include="Character.h" />
     <ClInclude Include="CombatDirector.h" />
+    <ClInclude Include="CombatEngagement.h" />
     <ClInclude Include="ContentDocument.h" />
     <ClInclude Include="ContentTypes.h" />
     <ClInclude Include="ContentSerializers.h" />
@@ -319,7 +320,6 @@
     <ClInclude Include="CharacterAnimator.h" />
     <ClInclude Include="AttackEditor.h" />
     <ClInclude Include="MapEditor.h" />
-    <ClInclude Include="VillageMap.h" />
     <ClInclude Include="VillageAssetData.h" />
     <ClInclude Include="AttackTuning.h" />
     <ClInclude Include="CellPickup.h" />

@@ -20,10 +20,20 @@ Sound Enemy::_sharedHurtSound{};
 Sound Enemy::_sharedDeathSound{};
 bool Enemy::_sharedResourcesLoaded = false;
 
+namespace
+{
+    // Monotonically increasing, process-wide — assigned once per C++ Enemy
+    // object (constructor only) and never reassigned by ResetForSpawn, so a
+    // pooled/reused enemy keeps the same runtime id across its whole pooled
+    // lifetime. Starts at 1 so 0 stays available as an "unset" sentinel.
+    std::uint64_t gNextEnemyRuntimeId = 1;
+}
+
 Enemy::Enemy(Vector2 pos)
 {
     _worldPos = pos;
     _homePos = pos;
+    _runtimeId = gNextEnemyRuntimeId++;
 }
 
 Enemy::~Enemy()
@@ -55,7 +65,7 @@ void Enemy::BeginPitFall(Vector2 pullTarget, Color tint)
     _pitTargetPos = pullTarget;
     _pitFallTint = tint;
     _velocity = Vector2Zero();
-    _attacking = false;
+    ReleaseAttackCommitment();
     _takingDamage = false;
     _forcedPushActive = false;
     _forcedPushSpeed = 0.f;
@@ -183,6 +193,15 @@ void Enemy::ResetForSpawn(Vector2 pos)
     _electricChargeTotalTimer = 0.f;
     _attacking = false;
     _damageApplied = false;
+    // Pooled reuse starts a fresh engagement life: no inherited Commit lock,
+    // no leftover recovery countdown, no stale assignment/target/swarm flag
+    // from whatever this pooled slot last played as. _runtimeId is NOT reset
+    // here — it is the one thing that must survive pooling (see Enemy.h).
+    _engagementLatch.Reset();
+    _engagementIntent = EngagementIntent::Reposition;
+    _engagementTarget = Vector2Zero();
+    _hasEngagementAssignment = false;
+    _swarmProfile = false;
     // Pooled reuse must never leak a previous life's elite state.
     _eliteEvents.Clear();
     _eliteEventSequence   = 0;
@@ -1174,6 +1193,18 @@ bool Enemy::CanTakeAttackSlot(const std::vector<std::unique_ptr<Enemy>>& enemies
     return committed < maxCommitted;
 }
 
+void Enemy::ReleaseAttackCommitment()
+{
+    // Only start the post-attack recovery countdown if an attack was actually
+    // in progress — calling EndCommit() unconditionally here would re-arm a
+    // fresh recovery window every time this is called on an enemy that was
+    // already idle (e.g. two interrupts landing back-to-back), extending its
+    // downtime for no reason.
+    if (_attacking)
+        _engagementLatch.EndCommit(Balance::Rhythm::kPostCommitRepositionSeconds);
+    _attacking = false;
+}
+
 Vector2 Enemy::ClampElitePathToNavigable(Vector2 start, Vector2 desired,
                                          const std::vector<Vector2>& propCenters,
                                          float propClearance) const
@@ -1268,9 +1299,26 @@ void Enemy::HandleAttack(const std::vector<std::unique_ptr<Enemy>>& enemies)
 
     float distance = Vector2Length(Vector2Subtract(_target->GetFeetWorldPos(), _worldPos));
 
-    if (distance <= _attackRange && !_attacking && _attackCooldown <= 0.f && CanTakeAttackSlot(enemies))
+    // Stable slot gate: prefer the per-frame CombatDirector assignment (this
+    // frame's EngagementIntent::Commit) plus the latch's own eligibility check
+    // (not still mid-attack or recovering) over the legacy proximity scan. The
+    // legacy CanTakeAttackSlot scan is kept ONLY as a fallback for any caller
+    // that never builds per-frame assignments for this enemy at all — e.g. a
+    // boss (excluded from BuildEngagementAssignments' candidate pool, see
+    // CombatDirector::UpdateEnemyRuntime) or an editor/tool path that ticks
+    // Enemy::Update() directly without going through CombatDirector. Both
+    // current in-game callers (Engine's dungeon-room and legacy wave-mode
+    // paths) route through CombatDirector::UpdateEnemyRuntime, which now sets
+    // an assignment for every alive, active, non-boss enemy every frame, so
+    // this fallback branch should be rare in practice.
+    bool canCommitAttack = HasEngagementAssignment()
+        ? (GetEngagementIntent() == EngagementIntent::Commit && _engagementLatch.CanCommit())
+        : CanTakeAttackSlot(enemies);
+
+    if (distance <= _attackRange && !_attacking && _attackCooldown <= 0.f && canCommitAttack)
     {
         _attacking = true;
+        _engagementLatch.BeginCommit();
         _damageApplied = false;
         _velocity = Vector2Zero();
 
@@ -1308,7 +1356,7 @@ void Enemy::HandleAttack(const std::vector<std::unique_ptr<Enemy>>& enemies)
 
     if (!_target->IsAlive())
     {
-        _attacking = false;
+        ReleaseAttackCommitment();
         _texture = _idleAnim;
         _updateTime = 1.f / 8.f;
         _maxFrames = (int)(_texture.width / _width);
@@ -1521,7 +1569,10 @@ void Enemy::HandleAnimation(float dt)
 
             if (_attacking)
             {
-                _attacking = false;
+                // Natural end of the attack animation — the canonical trigger
+                // for entering the post-commit recovery window (see
+                // ReleaseAttackCommitment / Balance::Rhythm::kPostCommitRepositionSeconds).
+                ReleaseAttackCommitment();
                 _texture = _idleAnim;
                 _updateTime = 1.f / 10.f;
                 _maxFrames = (int)(_texture.width / _width);
@@ -1752,7 +1803,7 @@ void Enemy::StartForcedPush(Vector2 direction, float speed)
     _forcedPushSpeed  = speed;
     _forcedPushActive = true;
 
-    _attacking = false;
+    ReleaseAttackCommitment();
     _velocity  = Vector2Zero();
     _launchHoldingHurtPose = false;
     _launchVisualTimer     = 0.f;
@@ -1800,7 +1851,7 @@ void Enemy::ApplyExternalImpulse(Vector2 impulse, bool cancelLockedAnimation)
 
     if (cancelLockedAnimation)
     {
-        _attacking = false;
+        ReleaseAttackCommitment();
     }
 }
 

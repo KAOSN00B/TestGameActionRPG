@@ -225,6 +225,9 @@
     <ClCompile Include="CombatDirector.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CombatEngagement.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MapDirector.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -483,6 +486,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CombatDirector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CombatEngagement.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MapDirector.h">

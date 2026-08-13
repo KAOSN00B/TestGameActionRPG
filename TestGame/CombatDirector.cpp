@@ -5,6 +5,7 @@
 #include "BomberImp.h"
 #include "Character.h"
 #include "ChompBug.h"
+#include "CombatEngagement.h"
 #include "Cyclops.h"
 #include "FlameWisp.h"
 #include "GoldPickup.h"
@@ -23,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 namespace
 {
@@ -531,6 +533,49 @@ void CombatDirector::UpdateEnemyRuntime(const EnemyRuntimeContext& ctx, float dt
             (aggression > Squad::kAggressionMax) ? Squad::kAggressionMax : aggression;
     }
 
+    // ── Engagement assignments: built ONCE per frame, before any enemy Update
+    // runs, so every enemy sees the same stable Commit/Support/Reposition
+    // picture this frame (see docs/superpowers/plans/2026-08-13-hades-style-
+    // enemy-combat-rhythm.md, Task 2). Bosses are deliberately excluded from
+    // the candidate pool — like the squad directive above, they fight their
+    // own fight rather than competing for a normal-enemy commit slot; their
+    // own HandleAttack (if any) falls back to the legacy CanTakeAttackSlot
+    // scan via Enemy::HasEngagementAssignment() staying false for them.
+    std::vector<EngagementCandidate> engagementCandidates;
+    engagementCandidates.reserve(ctx.enemies->size());
+    for (const auto& enemy : *ctx.enemies)
+    {
+        if (enemy->IsBoss())
+            continue;
+
+        EngagementCandidate candidate;
+        candidate.id = enemy->GetRuntimeId();
+        candidate.role = enemy->GetEncounterRole();
+        candidate.distance = Vector2Distance(enemy->GetWorldPos(), playerFeet);
+        // Dead/inactive/dying/pit-falling enemies do not occupy commit slots
+        // (see design "State and Failure Handling"); BuildEngagementAssignments
+        // omits alive==false candidates from its output entirely.
+        candidate.alive = enemy->IsActive() && enemy->IsAlive() && !enemy->IsDying()
+            && !enemy->IsPitFalling();
+        // Owns its slot through attack + recovery (see EngagementLatch).
+        candidate.locked = enemy->IsAttackLockedForEngagement();
+        // "Locked but not currently mid-swing" == the post-attack recovery
+        // window specifically (informational; BuildEngagementAssignments does
+        // not currently branch on this field).
+        candidate.recovering = candidate.locked && !enemy->IsCommittedToAttack();
+        candidate.swarm = enemy->IsSwarmProfile();
+        engagementCandidates.push_back(candidate);
+    }
+
+    const std::vector<EngagementAssignment> engagementAssignments =
+        BuildEngagementAssignments(engagementCandidates, ctx.tier, ctx.swarmEncounter,
+                                    _engagementSequence++);
+
+    std::unordered_map<std::uint64_t, const EngagementAssignment*> engagementById;
+    engagementById.reserve(engagementAssignments.size());
+    for (const EngagementAssignment& assignment : engagementAssignments)
+        engagementById[assignment.id] = &assignment;
+
     // Spawning during iteration would invalidate the loop when ctx.enemies
     // reallocates, so boss summons are collected here and executed after.
     std::vector<Vector2> pendingSmallSlimeSpawns;
@@ -557,6 +602,30 @@ void CombatDirector::UpdateEnemyRuntime(const EnemyRuntimeContext& ctx, float dt
         {
             navigationTarget = ctx.nav->GetTarget(enemy->GetWorldPos(), playerFeet);
             hasNavigationTarget = !Vector2Equals(navigationTarget, playerFeet);
+        }
+
+        // Apply this frame's engagement assignment before Update() so
+        // HandleAttack's Commit gate and (from Task 3 onward) positioning see
+        // it immediately. Enemies with no assignment (bosses, or anything
+        // BuildEngagementAssignments dropped as not-alive) fall back to
+        // holding their current position with Reposition intent — see
+        // Enemy::HasEngagementAssignment()/HandleAttack for the matching
+        // legacy-scan fallback on the attack-start gate.
+        auto assignmentIt = engagementById.find(enemy->GetRuntimeId());
+        if (assignmentIt != engagementById.end())
+        {
+            const EngagementAssignment& assignment = *assignmentIt->second;
+            constexpr float kEngagementOrbitRadius = 130.f;   // placeholder pending Task 3's ComputeEngagementTarget
+            Vector2 orbitTarget{
+                playerFeet.x + cosf(assignment.orbitAngle) * kEngagementOrbitRadius,
+                playerFeet.y + sinf(assignment.orbitAngle) * kEngagementOrbitRadius
+            };
+            Vector2 target = (assignment.intent == EngagementIntent::Commit) ? playerFeet : orbitTarget;
+            enemy->SetEngagementAssignment(assignment.intent, target);
+        }
+        else
+        {
+            enemy->SetEngagementAssignment(EngagementIntent::Reposition, enemy->GetWorldPos());
         }
 
         enemy->SetHazardZones(ctx.hazards);   // player damage zones to steer around

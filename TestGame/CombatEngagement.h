@@ -13,17 +13,17 @@
 // "no assignment found for this id" as a no-op for dead/inactive enemies.
 // =============================================================================
 
-#include "Enemy.h"   // reuse the existing EnemyRole enum rather than duplicating it
+#include "Enemy.h"   // reuse the existing EnemyRole/EngagementIntent types rather than duplicating them
 
 #include <cstdint>
 #include <vector>
 
-enum class EngagementIntent
-{
-    Commit,
-    Support,
-    Reposition
-};
+// EngagementIntent and EngagementLatch live in Enemy.h, not here: Enemy stores
+// an EngagementIntent and an EngagementLatch BY VALUE, and Enemy.h is already
+// included above (for EnemyRole) — having Enemy.h include this header back
+// would be a circular include. Enemy.h is the single owner of both types;
+// this header (and everything below) just reuses EngagementIntent from it,
+// exactly like it already reuses EnemyRole.
 
 struct EngagementCandidate
 {
