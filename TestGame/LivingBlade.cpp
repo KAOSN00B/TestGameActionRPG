@@ -118,6 +118,16 @@ void LivingBlade::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTar
 
     if (!_dying && _target != nullptr)
     {
+        // Reinforcement arrival latch (Task 5 follow-up): a freshly-telegraphed
+        // Living Blade holds position for a brief beat instead of dashing on
+        // its creation frame. LivingBlade fully overrides Enemy::Update, so it
+        // must check this itself — the shared base-class gate never runs for it.
+        if (_arrivalTimer > 0.f)
+        {
+            UpdateArrivalDelay(dt);
+            return;
+        }
+
         bool controlled = IsFrozen() || IsElectroStunned() || _takingDamage;
         _stateTimer -= dt;
 

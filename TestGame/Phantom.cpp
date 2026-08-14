@@ -121,6 +121,16 @@ void Phantom::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTarget*
         if (_target == nullptr)
             return;
 
+        // Reinforcement arrival latch (Task 5 follow-up): a freshly-telegraphed
+        // Phantom holds position for a brief beat instead of ambushing on its
+        // creation frame. Phantom fully overrides Enemy::Update, so it must
+        // check this itself — the shared base-class gate never runs for it.
+        if (_arrivalTimer > 0.f)
+        {
+            UpdateArrivalDelay(dt);
+            return;
+        }
+
         // Phase cycle — freezing pauses the cycle so ice can extend the window.
         if (!IsFrozen())
         {

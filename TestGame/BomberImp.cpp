@@ -117,6 +117,16 @@ void BomberImp::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTarge
     if (_target == nullptr)
         return;
 
+    // Reinforcement arrival latch (Task 5 follow-up): a freshly-telegraphed
+    // Bomber Imp holds position for a brief beat instead of seeking on its
+    // creation frame. BomberImp fully overrides Enemy::Update, so it must
+    // check this itself — the shared base-class gate never runs for it.
+    if (_arrivalTimer > 0.f)
+    {
+        UpdateArrivalDelay(dt);
+        return;
+    }
+
     bool controlled = IsFrozen() || IsElectroStunned();
     Vector2 toPlayer = Vector2Subtract(heroWorldPos, _worldPos);
     float dist = Vector2Length(toPlayer);

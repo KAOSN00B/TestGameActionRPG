@@ -176,6 +176,17 @@ void FlameWisp::Update(float dt, Vector2 heroWorldPos,
         if (_target == nullptr)
             return;
 
+        // Reinforcement arrival latch (Task 5 follow-up): a freshly-telegraphed
+        // Flame Wisp holds position for a brief beat instead of taking a lane
+        // on its creation frame. FlameWisp fully overrides Enemy::Update, so
+        // it must check this itself — the shared base-class gate never runs
+        // for it.
+        if (_arrivalTimer > 0.f)
+        {
+            UpdateArrivalDelay(dt);
+            return;
+        }
+
         if (_teleportCooldown > 0.f)
             _teleportCooldown -= dt;
 
