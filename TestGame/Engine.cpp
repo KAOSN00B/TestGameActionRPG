@@ -20353,22 +20353,133 @@ void Engine::UpdateDungeonRun(float dt)
         }
 
         HandlePlayerMeleeDamage();
-        ResolveDungeonEnemyCollisions();
 
         // Player-enemy capsule separation - gives enemies physical presence.
         // Dash passes through enemies; on landing inside one, the player is ejected.
+        //
+        // Task 6 (wall-safe separation): ordinary contact now moves the ENEMY
+        // away from the player instead of pushing the player into whatever is
+        // behind them. The old code re-read _player.GetWorldPos() fresh on
+        // every loop iteration, so each overlapping enemy this frame applied
+        // its own full MTV on top of whatever the PREVIOUS enemy had already
+        // pushed the player to, with no re-validation against room geometry
+        // afterward - that compounding, unvalidated push was the wall-trap
+        // bug. The fix: capture one STABLE player position/capsule before the
+        // loop (every contact this frame is measured against the same
+        // pre-resolution player, per the design's "Wall-Safe Physical
+        // Separation"), move each overlapping enemy by the policy's chosen
+        // delta, and cap actual player displacement to at most ONE small
+        // fallback nudge per frame (see ChooseBodySeparation/CombatSeparation
+        // for why summing playerDelta across many contacts can never recreate
+        // the old bug even without this cap - the cap is a second, structural
+        // guarantee on top of that).
+        //
+        // ResolveDungeonEnemyCollisions() (wall/prop correction for enemies)
+        // is deliberately called AFTER this block now, not before it as in
+        // the pre-Task-6 code - reordered per the plan's Step 4: "Capture one
+        // stable player position, move ordinary enemies outward, then run
+        // dungeon enemy collision." Running it after means any enemy this
+        // block moves toward a wall/prop gets corrected the same frame,
+        // instead of only correcting that frame's earlier AI movement and
+        // leaving a freshly-separated enemy's position unvalidated until next
+        // frame. HandlePlayerMeleeDamage() above is unaffected by the reorder
+        // - it already ran before ResolveDungeonEnemyCollisions() in the old
+        // code too, so melee still sees enemies at their pre-wall-correction
+        // positions for this frame, exactly as before.
         if (!_player.IsDashing())
         {
+            const Vector2   stablePlayerPos     = _player.GetWorldPos();
+            const Capsule2D stablePlayerCapsule = _player.GetCapsule();
+
+            // Deep-overlap threshold: the default enemy capsule radius is
+            // 36px (Enemy::GetCapsule) and the player's is 50px
+            // (BaseCharacter::GetCapsule), so ordinary brushing contact
+            // produces MTV magnitudes of a few pixels up to roughly a third
+            // of those radii. 24px (two-thirds of the smaller, enemy-side
+            // radius) is chosen as the line between "normal jostling" and "a
+            // genuinely deep embed" (e.g. an enemy spawned/shoved well inside
+            // the player) that enemy-only correction may not be able to
+            // resolve cleanly - only overlaps at least this deep are eligible
+            // for the rare player-fallback nudge below.
+            constexpr float kDeepOverlapThresholdPx = 24.f;
+
+            Vector2 totalPlayerDelta{ 0.f, 0.f };
+            // Structural guarantee against summed player pushes: regardless
+            // of how many enemies overlap the player this frame, at most ONE
+            // of them may contribute a (small, clamped) player-fallback
+            // delta. ChooseBodySeparation already keeps playerDelta at
+            // {0,0} in every case except the rare deep-overlap fallback, but
+            // capping to one contact per frame here removes any dependency
+            // on that alone and makes the "no summed pushes" property true
+            // by construction at the integration site too.
+            bool playerFallbackApplied = false;
+
+            std::vector<Rectangle> separationBlockers;
+            bool blockersComputed = false;
+            auto ensureBlockers = [&]() -> const std::vector<Rectangle>&
+            {
+                if (!blockersComputed)
+                {
+                    separationBlockers = GetDungeonSpawnBlockers(cellW, cellH);
+                    blockersComputed = true;
+                }
+                return separationBlockers;
+            };
+
             for (auto& enemy : _enemies)
             {
                 if (!enemy->IsActive() || !enemy->IsAlive()) continue;
                 Vector2 mtv{};
-                if (!CheckCapsuleCapsule(_player.GetCapsule(), enemy->GetCapsule(), mtv)) continue;
+                if (!CheckCapsuleCapsule(stablePlayerCapsule, enemy->GetCapsule(), mtv)) continue;
                 if (_player.IsBeingForcedPushed()) continue;
-                Vector2 ppos = _player.GetWorldPos();
-                _player.SetWorldPos({ ppos.x + mtv.x, ppos.y + mtv.y });
+
+                // Would moving the enemy the full separation distance away
+                // from the player land it somewhere clear of walls/props?
+                // Reuses the existing dungeon spawn-position validity check
+                // (the same one reinforcement placement uses) against the
+                // enemy's own real collision footprint - no new wall-check
+                // logic, just the existing one applied to this candidate.
+                const Vector2 enemyPos = enemy->GetWorldPos();
+                const Vector2 candidateEnemyPos{ enemyPos.x - mtv.x, enemyPos.y - mtv.y };
+                const bool enemyMoveValid = IsDungeonEnemySpawnPositionValid(
+                    enemy.get(), candidateEnemyPos, cellW, cellH, ensureBlockers());
+                const bool deepOverlap = Vector2Length(mtv) > kDeepOverlapThresholdPx;
+
+                const SeparationMove move = ChooseBodySeparation(mtv, enemyMoveValid, deepOverlap);
+
+                if (move.enemyDelta.x != 0.f || move.enemyDelta.y != 0.f)
+                    enemy->Teleport({ enemyPos.x + move.enemyDelta.x, enemyPos.y + move.enemyDelta.y });
+
+                if (!playerFallbackApplied && (move.playerDelta.x != 0.f || move.playerDelta.y != 0.f))
+                {
+                    totalPlayerDelta = move.playerDelta;
+                    playerFallbackApplied = true;
+                }
+            }
+
+            if (totalPlayerDelta.x != 0.f || totalPlayerDelta.y != 0.f)
+            {
+                // Immediately resolve the small fallback nudge against room
+                // tiles/props before committing it - reuses IsRoomSpawnAreaValid
+                // (the same free function GetDungeonSpawnBlockers/
+                // IsDungeonEnemySpawnPositionValid already wrap for enemies)
+                // against the player's own real collision rect. If the nudge
+                // itself would land the player in geometry, it is simply
+                // skipped rather than applied - the nudge exists to unstick a
+                // pinch, never to push the player into a wall.
+                const Vector2   candidatePlayerPos{ stablePlayerPos.x + totalPlayerDelta.x,
+                                                     stablePlayerPos.y + totalPlayerDelta.y };
+                const Rectangle currentPlayerBody = _player.GetCollisionRec();
+                const Rectangle candidatePlayerBody{
+                    currentPlayerBody.x + totalPlayerDelta.x,
+                    currentPlayerBody.y + totalPlayerDelta.y,
+                    currentPlayerBody.width, currentPlayerBody.height };
+                if (IsRoomSpawnAreaValid(_dungeonRoomLayout, candidatePlayerBody, cellW, cellH, ensureBlockers()))
+                    _player.SetWorldPos(candidatePlayerPos);
             }
         }
+
+        ResolveDungeonEnemyCollisions();
 
         // Keep all enemies within the tile room bounds (one cell margin from edges).
         {

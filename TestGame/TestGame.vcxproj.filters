@@ -231,6 +231,9 @@
     <ClCompile Include="ReinforcementPacing.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CombatSeparation.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MapDirector.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -495,6 +498,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ReinforcementPacing.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CombatSeparation.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MapDirector.h">

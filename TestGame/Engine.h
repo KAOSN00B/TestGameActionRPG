@@ -47,6 +47,7 @@
 #include "DamageNumberManager.h"
 #include "EncounterPlanner.h"
 #include "ReinforcementPacing.h"
+#include "CombatSeparation.h"
 #include "ShopManager.h"
 #include "DebugPanel.h"
 #include "WorldConfig.h"

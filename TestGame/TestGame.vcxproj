@@ -173,6 +173,7 @@
     <ClCompile Include="CombatDirector.cpp" />
     <ClCompile Include="CombatEngagement.cpp" />
     <ClCompile Include="ReinforcementPacing.cpp" />
+    <ClCompile Include="CombatSeparation.cpp" />
     <ClCompile Include="ContentDocument.cpp" />
     <ClCompile Include="ContentTypes.cpp" />
     <ClCompile Include="ContentSerializers.cpp" />
@@ -279,6 +280,7 @@
     <ClInclude Include="CombatDirector.h" />
     <ClInclude Include="CombatEngagement.h" />
     <ClInclude Include="ReinforcementPacing.h" />
+    <ClInclude Include="CombatSeparation.h" />
     <ClInclude Include="ContentDocument.h" />
     <ClInclude Include="ContentTypes.h" />
     <ClInclude Include="ContentSerializers.h" />

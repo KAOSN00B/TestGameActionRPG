@@ -1,5 +1,6 @@
 #include "CombatEngagement.h"
 #include "ReinforcementPacing.h"
+#include "CombatSeparation.h"
 
 #include <cassert>
 #include <cmath>
@@ -465,6 +466,101 @@ int main()
         AdvancePendingSpawn(spawn, 2.0f);
         assert(spawn.phase == PendingSpawnPhase::Ready);
         assert(spawn.smokeEmitted == true);
+    }
+
+    // ── Task 6: ChooseBodySeparation — ordinary overlap negates onto enemy ──
+    {
+        // Ordinary case: enemyMoveValid == true. enemyDelta exactly negates
+        // playerOutMtv; playerDelta stays zero regardless of deepOverlap
+        // (deepOverlap must not matter once the enemy move itself is valid).
+        Vector2 mtv{ 12.5f, -7.0f };
+        SeparationMove move = ChooseBodySeparation(mtv, /*enemyMoveValid*/true, /*deepOverlap*/false);
+        assert(move.enemyDelta.x == -mtv.x);
+        assert(move.enemyDelta.y == -mtv.y);
+        assert(move.playerDelta.x == 0.f && move.playerDelta.y == 0.f);
+
+        SeparationMove moveDeepIgnored = ChooseBodySeparation(mtv, /*enemyMoveValid*/true, /*deepOverlap*/true);
+        assert(moveDeepIgnored.enemyDelta.x == -mtv.x);
+        assert(moveDeepIgnored.enemyDelta.y == -mtv.y);
+        assert(moveDeepIgnored.playerDelta.x == 0.f && moveDeepIgnored.playerDelta.y == 0.f);
+    }
+
+    // ── Task 6: ChooseBodySeparation — invalid enemy move, shallow overlap ──
+    // The enemy can't be cleanly corrected (e.g. it would land in a wall),
+    // but the overlap isn't deep enough to justify moving the player either.
+    // Both deltas must be exactly zero — hold position rather than push
+    // anyone.
+    {
+        Vector2 mtv{ 9.f, 3.f };
+        SeparationMove move = ChooseBodySeparation(mtv, /*enemyMoveValid*/false, /*deepOverlap*/false);
+        assert(move.enemyDelta.x == 0.f && move.enemyDelta.y == 0.f);
+        assert(move.playerDelta.x == 0.f && move.playerDelta.y == 0.f);
+    }
+
+    // ── Task 6: ChooseBodySeparation — invalid enemy move, deep overlap ─────
+    // Only here may the player move, and only by the smallest necessary
+    // (clamped, bounded) correction — never the full MTV like the old buggy
+    // code applied.
+    {
+        Vector2 mtv{ 40.f, 0.f };
+        SeparationMove move = ChooseBodySeparation(mtv, /*enemyMoveValid*/false, /*deepOverlap*/true);
+        float playerDeltaLen = std::sqrt(move.playerDelta.x * move.playerDelta.x +
+                                          move.playerDelta.y * move.playerDelta.y);
+        float mtvLen = std::sqrt(mtv.x * mtv.x + mtv.y * mtv.y);
+        assert(playerDeltaLen > 0.f);              // nonzero: this is the one branch that may move the player
+        assert(playerDeltaLen < mtvLen);            // bounded: strictly smaller than the full MTV
+        // playerDelta points the same direction as playerOutMtv (away from
+        // the enemy, same as the enemy-move case would have used) — never
+        // toward the enemy.
+        assert(move.playerDelta.x > 0.f);
+        assert(move.playerDelta.y == 0.f);
+
+        // A large MTV must not blow the fallback past the small pixel
+        // ceiling either — the clamp is a hard cap, not purely proportional.
+        Vector2 hugeMtv{ 500.f, 0.f };
+        SeparationMove hugeMove = ChooseBodySeparation(hugeMtv, false, true);
+        float hugeLen = std::sqrt(hugeMove.playerDelta.x * hugeMove.playerDelta.x +
+                                   hugeMove.playerDelta.y * hugeMove.playerDelta.y);
+        assert(hugeLen < 20.f);   // generous ceiling check, well under the full 500px MTV
+    }
+
+    // ── Task 6: four simultaneous contacts do not sum four player pushes ───
+    // Simulates four enemies overlapping the player at once, from one stable
+    // player position (the exact scenario the old bug mishandled). Even in
+    // the worst case (every contact is an invalid-enemy-move deep overlap,
+    // the only branch that ever touches playerDelta), the SUMMED playerDelta
+    // magnitude across all four calls must be far less than what four full
+    // ordinary-case player pushes (i.e. four full MTVs applied directly to
+    // the player, the old buggy behavior) would have totaled.
+    {
+        Vector2 mtvs[4] = {
+            { 30.f, 0.f }, { -25.f, 10.f }, { 5.f, 28.f }, { -18.f, -22.f }
+        };
+
+        float oldBuggyTotalPush = 0.f;
+        Vector2 summedPlayerDelta{ 0.f, 0.f };
+        for (const Vector2& mtv : mtvs)
+        {
+            oldBuggyTotalPush += std::sqrt(mtv.x * mtv.x + mtv.y * mtv.y);
+            SeparationMove move = ChooseBodySeparation(mtv, /*enemyMoveValid*/false, /*deepOverlap*/true);
+            summedPlayerDelta.x += move.playerDelta.x;
+            summedPlayerDelta.y += move.playerDelta.y;
+        }
+        float summedLen = std::sqrt(summedPlayerDelta.x * summedPlayerDelta.x +
+                                     summedPlayerDelta.y * summedPlayerDelta.y);
+        assert(summedLen < oldBuggyTotalPush);
+
+        // The far more common mixed/ordinary scenario: any contact where the
+        // enemy move is valid contributes nothing to playerDelta at all, so
+        // the sum trivially stays at zero no matter how many enemies overlap.
+        Vector2 summedOrdinary{ 0.f, 0.f };
+        for (const Vector2& mtv : mtvs)
+        {
+            SeparationMove move = ChooseBodySeparation(mtv, /*enemyMoveValid*/true, /*deepOverlap*/false);
+            summedOrdinary.x += move.playerDelta.x;
+            summedOrdinary.y += move.playerDelta.y;
+        }
+        assert(summedOrdinary.x == 0.f && summedOrdinary.y == 0.f);
     }
 
     return 0;
