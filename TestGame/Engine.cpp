@@ -20271,6 +20271,17 @@ void Engine::UpdateDungeonRun(float dt)
         }
 
         EnemyRuntimeContext eCtx{};
+        // Engagement-policy tier/swarm inputs (Task 7 follow-up): derive the
+        // same depth-based tier CombatDirector::SpawnEnemies already uses for
+        // encounter composition, and flag a Swarm-profile room, so the
+        // 2-early/3-later commit escalation and the fragile-swarm bonus slot
+        // (Balance::Rhythm) actually activate instead of defaulting to
+        // tier 0/no-swarm on every room regardless of depth or profile.
+        {
+            const int depth = (_currentAct - 1) * 5 + _currentRoom;
+            eCtx.tier = (depth <= 2) ? 0 : (depth <= 6 ? 1 : 2);
+        }
+        eCtx.swarmEncounter     = (_currentEncounterProfile == EncounterProfile::Swarm);
         eCtx.player             = &_player;
         eCtx.nav                = &_nav;
         eCtx.props              = &_props;   // used by overworld rooms
