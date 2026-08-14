@@ -1529,6 +1529,13 @@ private:
     void TryReserveDungeonReinforcementBatch(float cellW, float cellH);
     void AdvanceDungeonPendingSpawns(float dt, float cellW, float cellH);
     bool IsDungeonReinforcementPosStillValid(Vector2 pos, float cellW, float cellH) const;
+    // Draws the procedural purple-circle warning (Circle phase: pulsing filled
+    // circle + expanding outline rings) and its contract-and-brighten Smoke
+    // phase for every pending reinforcement, in world space, converted to
+    // screen space via worldOffset the same way the sibling _vfx.Draw/pickup
+    // draws in that block do. Called from the dungeon draw pass, below enemy
+    // sprites and above floor tiles (see design's "Spawn Telegraph and VFX").
+    void DrawPendingEnemySpawns(Vector2 worldOffset) const;
     // Hazard persistence: snapshot the live hazards into the current room's
     // state and rebuild them on re-entry (lavaOnly = cleared-room terrain).
     void SaveDungeonRoomHazardState();

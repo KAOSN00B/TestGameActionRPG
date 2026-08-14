@@ -438,6 +438,23 @@ public:
     bool PitFallComplete() const;
     float PitFallProgress() const;
 
+    // Reinforcement arrival latch (Task 5): a freshly-telegraphed enemy is
+    // instantiated already facing/positioned correctly, but the design wants
+    // a brief beat before it may move or attack (design: "receives a short
+    // arrival/orientation delay before it may move or attack"). Implemented
+    // as an early-out inside Enemy::Update (see the .cpp) that withholds
+    // HandleMovement/HandleAttack while the timer is running — deliberately
+    // NOT a CombatDirector-level skip like PitFall, so CombatDirector.cpp
+    // stays untouched (out of this task's scope). NOTE: only the base
+    // Enemy::Update path checks this; the five enemy subclasses with a fully
+    // custom Update() override (SkeletonArcher, FlameWisp, Phantom,
+    // BomberImp, LivingBlade) do not consult _arrivalTimer — see Enemy.cpp's
+    // Update() comment and the Task 5 progress-ledger entry for the known-gap
+    // writeup.
+    void BeginArrivalDelay(float seconds) { _arrivalTimer = (seconds > 0.f) ? seconds : 0.f; }
+    void UpdateArrivalDelay(float dt) { _arrivalTimer = std::max(0.f, _arrivalTimer - std::max(0.f, dt)); }
+    bool IsArriving() const { return _arrivalTimer > 0.f; }
+
     virtual bool IsFrozen()        const { return _freezeTimer > 0.f; }
     // Burning status for relic synergies (Ember Heart / Wildfire). Based on the
     // shared base burn queue — covers grunts, new enemies, and the new bosses.
@@ -786,6 +803,8 @@ protected:
     Color _pitFallTint = WHITE;
     static constexpr float kPitFallDuration = 0.20f;
     std::uint64_t _combatId = 0;
+    // Reinforcement arrival latch (see BeginArrivalDelay above).
+    float _arrivalTimer = 0.f;
 
     // ── Stable engagement commitment state (see public accessors above) ──────
     // _runtimeId is assigned ONCE in the constructor and is never touched by

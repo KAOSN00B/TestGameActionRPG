@@ -162,6 +162,7 @@ void Enemy::ResetForSpawn(Vector2 pos)
     _pitFallTimer     = 0.f;
     _pitStartScale    = 0.f;
     _pitFallTint      = WHITE;
+    _arrivalTimer     = 0.f;
     _bestiaryRecorded = false;
     if (_isEliteMiniboss)
         SetPhaseThresholds({});   // previous pooled life was an elite — drop its 50% latch
@@ -689,8 +690,19 @@ void Enemy::Update(float dt, Vector2 heroWorldPos, Vector2 navigationTarget, boo
             return;
         }
 
-        HandleMovement(dt, navigationTarget, hasNavigationTarget, enemies, propCenters);
-        HandleAttack(enemies);
+        // Reinforcement arrival latch (Task 5): a freshly-telegraphed enemy
+        // holds its spawn position/facing for a brief beat instead of moving
+        // or attacking on its creation frame (design: "receives a short
+        // arrival/orientation delay before it may move or attack"). Everything
+        // else this frame (hit reactions, status ticks, animation) still runs
+        // normally — only movement/attack intent is withheld.
+        if (_arrivalTimer > 0.f)
+            UpdateArrivalDelay(dt);
+        else
+        {
+            HandleMovement(dt, navigationTarget, hasNavigationTarget, enemies, propCenters);
+            HandleAttack(enemies);
+        }
 
         // Hit knockback — recoil from a landed player hit. Moves the body directly
         // (Engine's collision pass still resolves walls/props afterwards) and

@@ -386,3 +386,11 @@ void VFXManager::SpawnImpactBurst(Vector2 worldPos, Color color, int count, floa
         _sparks.push_back(s);
     }
 }
+
+void VFXManager::SpawnSmokeBurst(Vector2 worldPos, Color color)
+{
+    // Upward-biased, low-speed, wide-cone puff through the existing bounded
+    // spark pool — a thin semantic wrapper, no parallel particle system.
+    SpawnImpactBurst(worldPos, color, /*count*/ 10, /*speed*/ 40.f,
+                     /*direction*/ Vector2{ 0.f, -1.f }, /*spreadRadians*/ 1.1f);
+}

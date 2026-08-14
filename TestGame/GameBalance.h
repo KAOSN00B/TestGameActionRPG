@@ -383,6 +383,12 @@ namespace Balance::Rhythm
     // "Spawn Telegraph and VFX".
     inline constexpr float kSpawnCircleSeconds = 0.65f;   // purple circle warning
     inline constexpr float kSpawnSmokeSeconds  = 0.30f;   // smoke burst before spawn
+
+    // Short arrival/orientation delay after a telegraphed reinforcement is
+    // instantiated (design: "receives a short arrival/orientation delay
+    // before it may move or attack"). Brief on purpose — this is a readability
+    // beat, not a stun mechanic.
+    inline constexpr float kSpawnArrivalDelaySeconds = 0.20f;
 }
 
 namespace Balance::DamageNumbers

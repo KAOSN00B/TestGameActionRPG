@@ -67,6 +67,14 @@ public:
     void SpawnImpactBurst(Vector2 worldPos, Color color, int count, float speed,
                           Vector2 direction, float spreadRadians);
 
+    // Reinforcement spawn telegraph puff (Task 5): a small burst of the same
+    // bounded impact-spark pool, biased upward and slow, so a reinforcement's
+    // Circle->Smoke transition reads as a puff of smoke rather than a hit
+    // spark spray. Caller passes the tint (purple-gray per the design); no
+    // new asset is loaded — this is a thin wrapper over the directional
+    // SpawnImpactBurst above.
+    void SpawnSmokeBurst(Vector2 worldPos, Color color);
+
     // Generic one-shot sprite FX from any 64px-cell horizontal strip (boss impacts,
     // ground bursts, etc.). Plays once and removes itself. The reusable path the FX
     // pass is built on — callers just hand it a loaded strip.

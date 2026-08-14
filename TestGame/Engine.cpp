@@ -16460,6 +16460,14 @@ Enemy* Engine::SpawnDungeonGrunt(const EncounterSpawnEntry& entry, Vector2 pos, 
     return spawned;
 }
 
+// Purple-gray tint shared by the Circle-phase warning shapes
+// (DrawPendingEnemySpawns) and the Circle->Smoke transition puff
+// (AdvanceDungeonPendingSpawns's SpawnSmokeBurst call below) so the whole
+// reinforcement telegraph reads as one consistent motif (design: "a filled
+// translucent purple raylib circle" / "existing smoke particles burst at the
+// position").
+constexpr Color kSpawnTelegraphColor{ 170, 110, 210, 255 };
+
 // Revalidates a reserved reinforcement position immediately before
 // instantiation, using the exact same blocker + minimum-player-distance
 // checks GetDungeonSpawnPos already applies at reservation time (design:
@@ -16524,7 +16532,16 @@ void Engine::AdvanceDungeonPendingSpawns(float dt, float cellW, float cellH)
     for (size_t i = 0; i < _pendingEnemySpawns.size(); )
     {
         PendingEnemySpawn& spawn = _pendingEnemySpawns[i];
+        const bool wasEmitted = spawn.smokeEmitted;
         AdvancePendingSpawn(spawn, dt);
+
+        // Fire the smoke puff exactly once, right on the Circle->Smoke
+        // transition frame (smokeEmitted flips false->true exactly once —
+        // see ReinforcementPacing.h). Guarding on the flip itself (not on
+        // phase==Smoke) means a large single-frame dt that walks the whole
+        // state machine through in one call still only emits once.
+        if (!wasEmitted && spawn.smokeEmitted)
+            _vfx.SpawnSmokeBurst(spawn.worldPos, kSpawnTelegraphColor);
 
         if (spawn.phase != PendingSpawnPhase::Ready)
         {
@@ -16533,11 +16550,80 @@ void Engine::AdvanceDungeonPendingSpawns(float dt, float cellW, float cellH)
         }
 
         if (IsDungeonReinforcementPosStillValid(spawn.worldPos, cellW, cellH))
-            SpawnDungeonGrunt(spawn.entry, spawn.worldPos, cellW, cellH);
+        {
+            Enemy* spawned = SpawnDungeonGrunt(spawn.entry, spawn.worldPos, cellW, cellH);
+            // Short arrival/orientation delay: the enemy exists but may not
+            // move or attack for a brief beat after the telegraph resolves
+            // (design: "State and Failure Handling" / "Spawn Telegraph and VFX").
+            if (spawned != nullptr)
+                spawned->BeginArrivalDelay(Balance::Rhythm::kSpawnArrivalDelaySeconds);
+        }
         else
             _dungeonReinforcements.push_front(spawn.entry);
 
         _pendingEnemySpawns.erase(_pendingEnemySpawns.begin() + (long)i);
+    }
+}
+
+// Draws every pending reinforcement's telegraph. Deterministic on
+// spawn.timer (never GetTime()/wall-clock), so hit-stop/slow-mo/pause freeze
+// this exactly like every other piece of UpdateDungeonRun. worldOffset is
+// taken as a parameter rather than recomputed, matching the sibling
+// _vfx.Draw(worldOffset, ...)/proj.Draw(worldOffset) calls in the same
+// dungeon draw block this is called from.
+//   Circle phase:  pulsing filled circle + two expanding/fading outline
+//                  rings (design: "a filled translucent purple raylib circle
+//                  pulses at the exact spawn position, with one or two
+//                  expanding outline rings").
+//   Smoke phase:   the circle contracts and brightens ahead of the spawn
+//                  (design: "the circle contracts and brightens").
+//   Ready phase:   nothing to draw — AdvanceDungeonPendingSpawns already
+//                  removes Ready entries from _pendingEnemySpawns the same
+//                  frame they resolve, so this is a defensive no-op, not the
+//                  expected path.
+void Engine::DrawPendingEnemySpawns(Vector2 worldOffset) const
+{
+    for (const auto& spawn : _pendingEnemySpawns)
+    {
+        if (spawn.phase == PendingSpawnPhase::Ready)
+            continue;
+
+        Vector2 screenPos = Vector2Add(spawn.worldPos, worldOffset);
+        screenPos.x += kVirtualWidth  / 2.f;
+        screenPos.y += kVirtualHeight / 2.f;
+
+        if (spawn.phase == PendingSpawnPhase::Circle)
+        {
+            const float elapsed = spawn.timer;   // 0 .. kSpawnCircleSeconds
+
+            // Filled circle gently breathes in size/alpha.
+            const float breathe = 0.5f + 0.5f * sinf(elapsed * 6.5f);
+            DrawCircleV(screenPos, 16.f + 4.f * breathe,
+                        Fade(kSpawnTelegraphColor, 0.28f + 0.18f * breathe));
+
+            // Two expanding, fading outline rings, offset half a cycle apart
+            // so a new ring is always mid-expansion (a continuous pulse
+            // rather than a single repeating ring).
+            constexpr float kRingPeriod    = 0.45f;
+            constexpr float kRingMaxRadius = 46.f;
+            for (int ring = 0; ring < 2; ++ring)
+            {
+                const float phaseOffset = (ring == 0) ? 0.f : kRingPeriod * 0.5f;
+                const float ringT = fmodf(elapsed + phaseOffset, kRingPeriod) / kRingPeriod;
+                const float ringRadius = ringT * kRingMaxRadius;
+                const float ringAlpha  = 1.f - ringT;
+                DrawCircleLinesV(screenPos, ringRadius,
+                                 Fade(kSpawnTelegraphColor, ringAlpha * 0.85f));
+            }
+        }
+        else   // Smoke phase
+        {
+            const float smokeElapsed = spawn.timer - Balance::Rhythm::kSpawnCircleSeconds;
+            const float t = std::clamp(smokeElapsed / Balance::Rhythm::kSpawnSmokeSeconds, 0.f, 1.f);
+            const float radius = 20.f - 14.f * t;                 // contracts toward a point
+            const Color color  = Fade(kSpawnTelegraphColor, 0.4f + 0.6f * t);  // brightens
+            DrawCircleV(screenPos, radius, color);
+        }
     }
 }
 
@@ -20979,6 +21065,7 @@ void Engine::DrawDungeonRun()
                 DrawEnemyProjectiles(worldOffset);
                 DrawCyclopsLasers(worldOffset);
                 _vfx.Draw(worldOffset, _player.GetWorldPos(), _player.GetCastOrigin());
+                DrawPendingEnemySpawns(worldOffset);   // purple-circle/smoke reinforcement telegraphs
                 for (auto& pickup : _pickups)
                     pickup->Draw(worldOffset);
                 // Treasure chest tile (ChestClosed / ChestOpen) is drawn by the tile renderer.
