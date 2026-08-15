@@ -563,5 +563,109 @@ int main()
         assert(summedOrdinary.x == 0.f && summedOrdinary.y == 0.f);
     }
 
+    // ── Hardening Task 1: required-interface existence/signature check ──────
+    // Compile-time only proof that Enemy::UpdateEngagementRuntime(float) and
+    // Enemy::CanOccupyEngagementSlot() const exist with the required
+    // signatures (see the Task 1 plan's "REQUIRED INTERFACES: do not
+    // deviate"). Taking a pointer-to-member-function only requires the
+    // declaration to exist — it does NOT construct an Enemy object, so this
+    // stays within this test binary's raylib-free constraint (a real Enemy's
+    // constructor and several virtuals are defined out-of-line in Enemy.cpp,
+    // which pulls in LoadTexture/PlaySound and would require linking
+    // raylib.lib plus a live graphics/audio context — see the
+    // "Enemy::GetRuntimeId() / pooling stability" comment above for the same
+    // constraint already documented in this file). Before Task 1's
+    // implementation, this line fails to compile with "is not a member of
+    // Enemy" — that failure IS the point of this check.
+    {
+        constexpr void (Enemy::* engagementRuntimeFn)(float) = &Enemy::UpdateEngagementRuntime;
+        constexpr bool (Enemy::* engagementEligibilityFn)() const = &Enemy::CanOccupyEngagementSlot;
+        (void)engagementRuntimeFn;
+        (void)engagementEligibilityFn;
+    }
+
+    // ── Hardening Task 1: engagement runtime boundary ticks exactly once ────
+    // Enemy::UpdateEngagementRuntime(dt) must be the SINGLE place that ever
+    // advances the engagement latch's recovery countdown (design: "CombatDirector
+    // ... ticks each active enemy's engagement latch exactly once per gameplay
+    // frame before building engagement candidates"). Its real body is a
+    // one-line forward to _engagementLatch.Update(dt) (see Enemy.h) — verified
+    // by inspection that this is the ONLY call site outside Enemy.h's own
+    // EngagementLatch class (grep "_engagementLatch.Update" across
+    // Enemy.h/.cpp and CombatDirector.cpp). This harness reproduces that exact
+    // one-line forward shape so the single-tick-per-call contract itself is
+    // proven here at runtime (a real Enemy object cannot be constructed in
+    // this standalone binary — see the interface-existence check above).
+    {
+        struct EngagementRuntimeHarness
+        {
+            EngagementLatch latch;
+            // Mirrors Enemy::UpdateEngagementRuntime's exact body.
+            void UpdateEngagementRuntime(float dt) { latch.Update(dt); }
+        };
+
+        EngagementRuntimeHarness enemy;
+
+        // BeginCommit then EndCommit(0.65) is ineligible.
+        enemy.latch.BeginCommit();
+        enemy.latch.EndCommit(0.65f);
+        assert(enemy.latch.CanCommit() == false);
+
+        // 0.64s of shared runtime ticks (via UpdateEngagementRuntime) remains
+        // ineligible; another 0.02s becomes eligible.
+        enemy.UpdateEngagementRuntime(0.64f);
+        assert(enemy.latch.CanCommit() == false);
+        enemy.UpdateEngagementRuntime(0.02f);   // 0.64 + 0.02 = 0.66s >= 0.65s
+        assert(enemy.latch.CanCommit() == true);
+
+        // Exactly one tick of 0.10 subtracts 0.10, not 0.20 — i.e. the latch
+        // is only ticked ONCE per UpdateEngagementRuntime call, never
+        // double-ticked. Proven with a boundary probe: after a single 0.10s
+        // call, 0.55s of recovery remains. Adding 0.549s more (0.649s total)
+        // must STILL be ineligible; only a further 0.002s (0.651s total)
+        // crosses the 0.65s threshold. If UpdateEngagementRuntime had
+        // secretly double-ticked (consuming 0.20 instead of 0.10), only
+        // 0.45s would remain after the first call, and the 0.549s probe
+        // alone would already cross the threshold — flipping CanCommit() to
+        // true one assert early and failing this test.
+        enemy.latch.BeginCommit();
+        enemy.latch.EndCommit(0.65f);
+        enemy.UpdateEngagementRuntime(0.10f);   // exactly one call
+        enemy.latch.Update(0.549f);             // direct latch tick, bypassing the wrapper
+        assert(enemy.latch.CanCommit() == false);   // 0.649s total: still short
+        enemy.latch.Update(0.002f);             // 0.651s total: now past 0.65s
+        assert(enemy.latch.CanCommit() == true);
+    }
+
+    // ── Hardening Task 1: engagement slot eligibility ────────────────────────
+    // CanOccupyEngagementSlot() must be false for inactive, dead, dying,
+    // pit-falling, arriving, frozen, or electro-stunned enemies, and true
+    // only for a fully actionable enemy (design: "An enemy may occupy a
+    // commit slot only when it is active, alive, not dying, not pit-falling,
+    // not arriving, not frozen, and not electro-stunned"). Exercised via
+    // EvaluateEngagementSlotEligibility, the free pure predicate
+    // Enemy::CanOccupyEngagementSlot() forwards to (see Enemy.h) — same
+    // raylib-construction constraint noted above.
+    {
+        // Fully actionable: eligible.
+        assert(EvaluateEngagementSlotEligibility(
+            /*active*/true, /*alive*/true, /*dying*/false, /*pitFalling*/false,
+            /*arriving*/false, /*frozen*/false, /*electroStunned*/false) == true);
+
+        // Each single disabling flag, independently, makes it ineligible.
+        assert(EvaluateEngagementSlotEligibility(false, true,  false, false, false, false, false) == false); // inactive
+        assert(EvaluateEngagementSlotEligibility(true,  false, false, false, false, false, false) == false); // dead
+        assert(EvaluateEngagementSlotEligibility(true,  true,  true,  false, false, false, false) == false); // dying
+        assert(EvaluateEngagementSlotEligibility(true,  true,  false, true,  false, false, false) == false); // pit-falling
+        assert(EvaluateEngagementSlotEligibility(true,  true,  false, false, true,  false, false) == false); // arriving
+        assert(EvaluateEngagementSlotEligibility(true,  true,  false, false, false, true,  false) == false); // frozen
+        assert(EvaluateEngagementSlotEligibility(true,  true,  false, false, false, false, true ) == false); // electro-stunned
+
+        // Combinations of multiple disabling flags remain ineligible.
+        assert(EvaluateEngagementSlotEligibility(false, false, true,  true,  true,  true,  true ) == false);
+        assert(EvaluateEngagementSlotEligibility(true,  true,  true,  true,  false, false, false) == false);
+        assert(EvaluateEngagementSlotEligibility(true,  true,  false, false, true,  true,  false) == false);
+    }
+
     return 0;
 }

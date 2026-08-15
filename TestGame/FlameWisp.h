@@ -61,7 +61,7 @@ private:
 
     void SetIdleAnimation(bool resetFrame);
     void HandleAnimation(float dt);
-    Vector2 PickTeleportSpot() const;
+    Vector2 PickTeleportSpot(float dt);
 
     WispState _state = WispState::Drifting;
     float   _stateTimer      = 0.f;

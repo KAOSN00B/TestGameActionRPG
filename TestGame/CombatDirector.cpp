@@ -533,6 +533,23 @@ void CombatDirector::UpdateEnemyRuntime(const EnemyRuntimeContext& ctx, float dt
             (aggression > Squad::kAggressionMax) ? Squad::kAggressionMax : aggression;
     }
 
+    // ── Engagement runtime boundary (Task 1: hardening pass) ─────────────────
+    // CombatDirector is the shared runtime boundary for every enemy type: it
+    // ticks each active enemy's engagement latch exactly once per gameplay
+    // frame, before any engagement candidate is built (see the hardening
+    // design's "Engagement Lifecycle"). This is the ONLY call site for
+    // Enemy::UpdateEngagementRuntime — do not also tick it inside
+    // Enemy::Update, a subclass Update, or HandleAttack, which would
+    // double-advance recovery. Ticked for every active enemy, including
+    // bosses (excluded from the candidate pool below, but their own
+    // HandleAttack still consults the same latch via the legacy
+    // CanTakeAttackSlot fallback, so their recovery must still advance).
+    for (const auto& enemy : *ctx.enemies)
+    {
+        if (enemy->IsActive())
+            enemy->UpdateEngagementRuntime(dt);
+    }
+
     // ── Engagement assignments: built ONCE per frame, before any enemy Update
     // runs, so every enemy sees the same stable Commit/Support/Reposition
     // picture this frame (see docs/superpowers/plans/2026-08-13-hades-style-
@@ -552,13 +569,22 @@ void CombatDirector::UpdateEnemyRuntime(const EnemyRuntimeContext& ctx, float dt
         candidate.id = enemy->GetRuntimeId();
         candidate.role = enemy->GetEncounterRole();
         candidate.distance = Vector2Distance(enemy->GetWorldPos(), playerFeet);
-        // Dead/inactive/dying/pit-falling enemies do not occupy commit slots
-        // (see design "State and Failure Handling"); BuildEngagementAssignments
-        // omits alive==false candidates from its output entirely.
-        candidate.alive = enemy->IsActive() && enemy->IsAlive() && !enemy->IsDying()
-            && !enemy->IsPitFalling();
         // Owns its slot through attack + recovery (see EngagementLatch).
         candidate.locked = enemy->IsAttackLockedForEngagement();
+        // Dead/inactive/dying/pit-falling enemies never occupy a commit slot,
+        // no exception (design "State and Failure Handling");
+        // BuildEngagementAssignments omits alive==false candidates from its
+        // output entirely. Among enemies that clear that hard bar, exclude
+        // arriving/frozen/electro-stunned (Enemy::CanOccupyEngagementSlot())
+        // UNLESS the enemy already owns its slot through an authored attack
+        // or its post-attack recovery window (candidate.locked) — a
+        // disabling status flipping mid-swing (e.g. frozen while
+        // _attacking) must not forcibly evict an attack that already
+        // committed (design: "Existing authored uninterruptible attacks
+        // retain ownership until completion").
+        candidate.alive = candidate.locked
+            ? (enemy->IsActive() && enemy->IsAlive() && !enemy->IsDying() && !enemy->IsPitFalling())
+            : enemy->CanOccupyEngagementSlot();
         // "Locked but not currently mid-swing" == the post-attack recovery
         // window specifically (informational; BuildEngagementAssignments does
         // not currently branch on this field).

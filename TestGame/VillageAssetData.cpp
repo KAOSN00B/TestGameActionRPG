@@ -7,6 +7,13 @@
 #include <algorithm>
 #include <filesystem>
 
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall MoveFileExW(
+    const wchar_t* existingName, const wchar_t* newName, unsigned long flags);
+constexpr unsigned long kMoveFileReplaceExisting = 0x1;
+constexpr unsigned long kMoveFileWriteThrough = 0x8;
+#endif
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Parsing helpers (file-local)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,7 +115,6 @@ namespace
         if (EqualsIgnoreCase(text, "Training"))    return VillageService::Training;
         if (EqualsIgnoreCase(text, "ClassChange")) return VillageService::ClassChange;
         if (EqualsIgnoreCase(text, "Wardrobe"))    return VillageService::Wardrobe;
-        if (EqualsIgnoreCase(text, "Bestiary"))    return VillageService::Bestiary;
         if (EqualsIgnoreCase(text, "Cartographer"))return VillageService::Cartographer;
         if (EqualsIgnoreCase(text, "TrophyHall"))  return VillageService::TrophyHall;
         if (EqualsIgnoreCase(text, "DungeonGate")) return VillageService::DungeonGate;
@@ -124,7 +130,6 @@ namespace
         if (EqualsIgnoreCase(text, "Train"))       return VillageInteractionType::Train;
         if (EqualsIgnoreCase(text, "ChangeClass")) return VillageInteractionType::ChangeClass;
         if (EqualsIgnoreCase(text, "Wardrobe"))    return VillageInteractionType::Wardrobe;
-        if (EqualsIgnoreCase(text, "Bestiary"))    return VillageInteractionType::Bestiary;
         if (EqualsIgnoreCase(text, "Inspect"))     return VillageInteractionType::Inspect;
         if (EqualsIgnoreCase(text, "StartRun"))    return VillageInteractionType::StartRun;
         return VillageInteractionType::None;
@@ -150,6 +155,29 @@ namespace
     {
         // type= uses the same vocabulary as the inferred names.
         return MarkerTypeFromName(text);
+    }
+
+    // Atomically replaces `destination` with `source`. Used so a save that
+    // crashes (or races with the running game reading the same file) can never
+    // leave a half-written ".vasset" on disk.
+    bool ReplaceFile(const std::filesystem::path& source, const std::filesystem::path& destination)
+    {
+#ifdef _WIN32
+        return MoveFileExW(source.c_str(), destination.c_str(),
+                           kMoveFileReplaceExisting | kMoveFileWriteThrough) != 0;
+#else
+        std::error_code ec;
+        std::filesystem::rename(source, destination, ec);
+        return !ec;
+#endif
+    }
+
+    // Quote a value only if it contains whitespace; keeps simple names/paths
+    // readable while still round-tripping through the quote-aware tokenizer.
+    std::string QuoteIfNeeded(const std::string& text)
+    {
+        if (text.find_first_of(" \t") == std::string::npos) return text;
+        return "\"" + text + "\"";
     }
 }
 
@@ -344,6 +372,87 @@ bool VillageAssetLoader::Load(const std::string& vassetPath, VillageAssetData& o
     return sawHeader;
 }
 
+bool VillageAssetLoader::Save(const std::string& vassetPath, const VillageAssetData& data)
+{
+    std::filesystem::path path(vassetPath);
+    std::error_code dirEc;
+    if (!path.parent_path().empty())
+        std::filesystem::create_directories(path.parent_path(), dirEc);
+
+    const std::filesystem::path temporary = path.string() + ".tmp";
+    FILE* file = fopen(temporary.string().c_str(), "w");
+    if (!file) return false;
+
+    fprintf(file, "village_asset 1\n");
+    fprintf(file, "image %s\n", QuoteIfNeeded(data.imageFile).c_str());
+    fprintf(file, "size %.0f %.0f\n", data.imageSize.x, data.imageSize.y);
+    if (data.animation.enabled)
+    {
+        fprintf(file, "animation %d %d %d %.2f\n", data.animation.columns, data.animation.rows,
+                data.animation.frameCount, data.animation.fps);
+    }
+    fprintf(file, "id %s\n", QuoteIfNeeded(data.id).c_str());
+    if (data.displayName != data.id)
+        fprintf(file, "display_name %s\n", QuoteIfNeeded(data.displayName).c_str());
+    fprintf(file, "category %s\n", ToString(data.category));
+    fprintf(file, "service %s\n", ToString(data.service));
+    fprintf(file, "cost %d\n", data.cost);
+    fprintf(file, "required %d\n", data.required ? 1 : 0);
+    fprintf(file, "unique %d\n", data.unique ? 1 : 0);
+    fprintf(file, "removable %d\n", data.removable ? 1 : 0);
+
+    for (const VaRect& collider : data.colliders)
+        fprintf(file, "collider %.2f %.2f %.2f %.2f\n", collider.x, collider.y, collider.w, collider.h);
+
+    for (const VAssetMarker& marker : data.markers)
+    {
+        fprintf(file, "marker %s %.2f %.2f", QuoteIfNeeded(marker.name).c_str(), marker.localPos.x, marker.localPos.y);
+        if (marker.type != MarkerTypeFromName(marker.name)) fprintf(file, " type=%s", ToString(marker.type));
+        if (!marker.npcId.empty()) fprintf(file, " id=\"%s\"", marker.npcId.c_str());
+        fprintf(file, "\n");
+    }
+
+    for (const VAssetInteraction& interaction : data.interactions)
+    {
+        fprintf(file, "interact %.2f %.2f %.2f %.2f", interaction.localRect.x, interaction.localRect.y,
+                interaction.localRect.w, interaction.localRect.h);
+        if (interaction.type != VillageInteractionType::None) fprintf(file, " type=%s", ToString(interaction.type));
+        if (!interaction.prompt.empty()) fprintf(file, " prompt=\"%s\"", interaction.prompt.c_str());
+        if (!interaction.target.empty()) fprintf(file, " target=\"%s\"", interaction.target.c_str());
+        fprintf(file, "\n");
+    }
+
+    for (const VAssetDoor& door : data.doors)
+    {
+        fprintf(file, "door %.2f %.2f %.2f %.2f", door.localRect.x, door.localRect.y,
+                door.localRect.w, door.localRect.h);
+        if (!door.targetMap.empty()) fprintf(file, " target=\"%s\"", door.targetMap.c_str());
+        if (!door.targetSpawn.empty()) fprintf(file, " spawn=\"%s\"", door.targetSpawn.c_str());
+        if (!door.blocksWhenClosed) fprintf(file, " blocks_closed=0");
+        if (!door.prompt.empty()) fprintf(file, " prompt=\"%s\"", door.prompt.c_str());
+        fprintf(file, "\n");
+    }
+
+    for (const VAssetAmbientSpawn& spawn : data.ambientSpawns)
+    {
+        fprintf(file, "ambient %.2f %.2f", spawn.localPos.x, spawn.localPos.y);
+        if (!spawn.group.empty()) fprintf(file, " group=\"%s\"", spawn.group.c_str());
+        if (spawn.maxCount != 1) fprintf(file, " max=%d", spawn.maxCount);
+        if (!spawn.unlockKey.empty()) fprintf(file, " unlock_key=\"%s\"", spawn.unlockKey.c_str());
+        fprintf(file, "\n");
+    }
+
+    fclose(file);
+
+    if (!ReplaceFile(temporary, path))
+    {
+        std::error_code removeEc;
+        std::filesystem::remove(temporary, removeEc);
+        return false;
+    }
+    return true;
+}
+
 std::vector<VillageAssetData> VillageAssetLoader::LoadCatalog(const std::string& folder)
 {
     std::vector<VillageAssetData> catalog;
@@ -387,7 +496,6 @@ const char* VillageAssetLoader::ToString(VillageService service)
     case VillageService::Training:     return "Training";
     case VillageService::ClassChange:  return "ClassChange";
     case VillageService::Wardrobe:     return "Wardrobe";
-    case VillageService::Bestiary:     return "Bestiary";
     case VillageService::Cartographer: return "Cartographer";
     case VillageService::TrophyHall:   return "TrophyHall";
     case VillageService::DungeonGate:  return "DungeonGate";
@@ -407,7 +515,6 @@ const char* VillageAssetLoader::ToString(VillageInteractionType interactionType)
     case VillageInteractionType::Train:       return "Train";
     case VillageInteractionType::ChangeClass: return "ChangeClass";
     case VillageInteractionType::Wardrobe:    return "Wardrobe";
-    case VillageInteractionType::Bestiary:    return "Bestiary";
     case VillageInteractionType::Inspect:     return "Inspect";
     case VillageInteractionType::StartRun:    return "StartRun";
     }

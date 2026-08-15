@@ -147,7 +147,7 @@ void BomberImp::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTarge
             // "due" for its bomb run is still dangerous at point-blank range.
             Vector2 seekAnchor = heroWorldPos;
             if (HasEngagementAssignment() && GetEngagementIntent() != EngagementIntent::Commit)
-                seekAnchor = GetEngagementTarget();
+                seekAnchor = GetStableEngagementTarget(dt);
             Vector2 toAnchor = Vector2Subtract(seekAnchor, _worldPos);
             float distToAnchor = Vector2Length(toAnchor);
 
@@ -164,10 +164,21 @@ void BomberImp::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTarge
             _worldPos = Vector2Add(_worldPos, step);
         }
 
-        if (dist < kFuseDistance)
+        // Only light the fuse if this imp holds (or can claim) this frame's
+        // shared Commit slot — without this gate every imp within throw
+        // distance detonates regardless of the commit-slot budget, since only
+        // its POSITIONING previously consulted the engagement intent. No
+        // matching EndCommit() is needed: BeginDetonation() below removes
+        // this imp from play entirely (suicide attack), and dead/inactive
+        // enemies are already excluded from candidate-building, so the latch
+        // never leaks a stale "locked" slot.
+        bool canCommitFuse = !HasEngagementAssignment() ||
+            (GetEngagementIntent() == EngagementIntent::Commit && _engagementLatch.CanCommit());
+        if (dist < kFuseDistance && canCommitFuse)
         {
             _state = ImpState::Fusing;
             _fuseTimer = kFuseDuration;
+            _engagementLatch.BeginCommit();
             SetSoundVolume(_sharedFuseSound, 0.6f);
             PlaySound(_sharedFuseSound);
         }

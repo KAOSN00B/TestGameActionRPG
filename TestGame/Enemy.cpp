@@ -120,37 +120,6 @@ void Enemy::Init()
     ResetForSpawn(_worldPos);
 }
 
-const char* Enemy::GetBestiaryName()
-{
-    if (AsCyclops())       return "Cyclops";
-    if (AsOgre())          return "Ogre";
-    if (AsMolarbeast())    return "Molarbeast";
-    if (AsSkeletonArcher())return "Skeleton Archer";
-    if (AsFlameWisp())     return "Flame Wisp";
-    if (AsAbyssSlime())    return "Abyss Slime";
-    if (AsSlime())         return "Slime";
-    if (AsPumpkinJack())   return "Pumpkin Jack";
-    if (AsMinotaur())      return "Minotaur";
-    if (AsSporeling())     return "Sporeling";
-    if (AsShieldbearer())  return "Shieldbearer";
-    if (AsPhantom())       return "Phantom";
-    if (AsBomberImp())     return "Bomber Imp";
-    if (AsWarchief())      return "Warchief";
-    if (AsLivingBlade())   return "Living Blade";
-    if (AsChompBug())      return "Chomp Bug";
-    if (AsOsiris())        return "Osiris";
-    if (AsTitanGuard())    return "Titan Guard";
-    if (AsToxicVermin())   return "Toxic Vermin";
-    if (AsAncientBear())   return "Ancient Bear";
-    if (AsWerewolf())      return "Werewolf";
-    if (AsInfernal())      return "Infernal Brute";
-    if (AsBonechill())     return "Bonechill";
-    if (AsStormclub())     return "Stormclub";
-    if (AsVenomfang())     return "Venomfang";
-    const char* tn = GetTuningName();
-    return tn ? tn : "Grunt";
-}
-
 void Enemy::ResetForSpawn(Vector2 pos)
 {
     _worldPos = pos;
@@ -163,7 +132,6 @@ void Enemy::ResetForSpawn(Vector2 pos)
     _pitStartScale    = 0.f;
     _pitFallTint      = WHITE;
     _arrivalTimer     = 0.f;
-    _bestiaryRecorded = false;
     if (_isEliteMiniboss)
         SetPhaseThresholds({});   // previous pooled life was an elite — drop its 50% latch
     _isEliteMiniboss  = false;
@@ -995,7 +963,17 @@ void Enemy::HandleMovement(float dt, Vector2 navigationTarget, bool hasNavigatio
 
     Vector2 moveDir = Vector2Zero();
 
-    if (Vector2Length(toPlayer) > 0.01f)
+    // Arrival deadzone for a held, STATIONARY engagement point (Reposition/
+    // Support/recovering-Commit): without this, a constant-speed walk toward
+    // a fixed point with no deceleration overshoots it every frame, flips
+    // direction, overshoots back, and repeats — the enemy visibly shakes in
+    // place instead of settling. Only applies while useEngagementTarget is
+    // actually holding a stationary point; a genuine Commit approach (chasing
+    // the moving player) is unaffected and keeps its existing direct pathing.
+    bool arrivedAtHoldPoint = useEngagementTarget &&
+        Vector2Length(toPlayer) < Balance::Rhythm::kEngagementArrivalDeadzone;
+
+    if (!arrivedAtHoldPoint && Vector2Length(toPlayer) > 0.01f)
         moveDir = Vector2Normalize(toPlayer);
 
     // Sporeling-style indirect approach: blend in a perpendicular component

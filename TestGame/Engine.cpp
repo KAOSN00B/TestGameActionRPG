@@ -727,7 +727,6 @@ void Engine::StartNextRoom(RoomType type)
 
 void Engine::DebugStartRun()
 {
-    _isDailyRun = false;   // debug runs are never daily-seeded
     ResetRunState();
 #if MO_DEV_TOOLS
     _debug.Activate();
@@ -1971,7 +1970,6 @@ void Engine::Update(float dt)
         {
             // New Game is the repeatable onboarding path while the tutorial is
             // being tuned. Saved onboarding progress is deliberately untouched.
-            _isDailyRun = false;   // normal (randomly seeded) run
             _prologueEntryMode = PrologueEntryMode::NewGame;
             _classSelectCursor = (int)_player.GetClass();
             ReloadAppearancePortrait();
@@ -1982,27 +1980,11 @@ void Engine::Update(float dt)
         {
             // Continue is the testing shortcut into the established village
             // flow. Hero selection still makes class and appearance explicit.
-            _isDailyRun = false;
             _prologueEntryMode = PrologueEntryMode::Continue;
             _classSelectCursor = (int)_player.GetClass();
             ReloadAppearancePortrait();
             _classSelectReturnState = GameState::Menu;
             _gameState = GameState::ClassSelect;
-        }
-        if (IsKeyPressed(KEY_T))   // start today's seeded Daily Run
-        {
-            _isDailyRun = true;
-            _dailySeed  = ComputeDailySeed();
-            _prologueEntryMode = PrologueEntryMode::Continue;
-            _classSelectCursor = (int)_player.GetClass();
-            ReloadAppearancePortrait();
-            _classSelectReturnState = GameState::Menu;
-            _gameState = GameState::ClassSelect;
-        }
-        if (IsKeyPressed(KEY_B))   // open the Bestiary from the main menu
-        {
-            _bestiaryReturnState = GameState::Menu;
-            _gameState = GameState::Bestiary;
         }
 #if MO_DEV_TOOLS
         if (_menu.DebugPressed() && _demoCompleted)
@@ -2065,10 +2047,6 @@ void Engine::Update(float dt)
             _mapEditor.Init();
             _gameState = GameState::MapEditor;
         }
-        if (IsKeyPressed(KEY_Y))   // dev: playable village-builder placement playground
-        {
-            EnterVillagePlayground();
-        }
 #endif
         if (_menu.SettingsPressed())
         {
@@ -2104,10 +2082,6 @@ void Engine::Update(float dt)
 
     case GameState::RelicChoice:
         UpdateRelicChoice();
-        break;
-
-    case GameState::Bestiary:
-        UpdateBestiary();
         break;
 
     case GameState::DungeonRun:
@@ -2332,7 +2306,6 @@ void Engine::Update(float dt)
         }
         break;
 
-    case GameState::VillagePlayground:
     case GameState::Village:
     {
         _gamepad.Update(_gamepadBindingsEdit);
@@ -2529,8 +2502,7 @@ void Engine::Update(float dt)
 
             if (_levelUpReturnState == GameState::DungeonRun)
                 _gameState = GameState::DungeonRun;
-            else if (_levelUpReturnState == GameState::VillagePlayground ||
-                     _levelUpReturnState == GameState::Village)   // Zeph in the village
+            else if (_levelUpReturnState == GameState::Village)   // Zeph in the village
                 _gameState = _levelUpReturnState;
             else
                 _gameState = GameState::Play;
@@ -2898,14 +2870,6 @@ void Engine::UpdateGamePlay(float dt)
         UpdateMageSpells(dt);
         if (_secondWindToastTimer > 0.f) _secondWindToastTimer -= dt;
 
-        // Bestiary: count each enemy death once as it dies.
-        for (auto& e : _enemies)
-            if (e->IsActive() && !e->IsAlive() && !e->BestiaryRecorded())
-            {
-                _meta.RecordBestiaryKill(e->GetBestiaryName());
-                e->SetBestiaryRecorded();
-            }
-
         // Relic reward: once the room is clear of enemies, present the 3-card pick.
         if (_pendingRelicChoices > 0 && _gameState == GameState::DungeonRun &&
             _currentRoomType != RoomType::Store && GetActiveEnemyCount() == 0 &&
@@ -2995,6 +2959,36 @@ namespace
     constexpr float kVillagePlaygroundTilePx = 48.f;
     constexpr int kVillagePlaygroundCols = 40;   // one standard-room width at 48 px
     constexpr int kVillagePlaygroundRows = 23;   // one standard-room height at 48 px
+
+    // .vasset markers/interactions are authored in image-local pixels; these
+    // convert them to world space for a specific placed instance, mirroring
+    // VillageAssetData::MarkerWorldPos/InteractionWorldRect's own math.
+    const VAssetMarker* FindVillageMarker(const std::vector<VAssetMarker>& markers, VillageMarkerType type)
+    {
+        for (const VAssetMarker& marker : markers)
+            if (marker.type == type) return &marker;
+        return nullptr;
+    }
+
+    Vector2 VillageObjectMarkerWorldPos(const VAssetMarker& marker, int cellCol, int cellRow, float scale)
+    {
+        return Vector2{ cellCol * kVillagePlaygroundTilePx + marker.localPos.x * scale,
+                        cellRow * kVillagePlaygroundTilePx + marker.localPos.y * scale };
+    }
+
+    Rectangle VillageObjectInteractionWorldRect(const VAssetInteraction& interaction, int cellCol, int cellRow, float scale)
+    {
+        return Rectangle{ cellCol * kVillagePlaygroundTilePx + interaction.localRect.x * scale,
+                          cellRow * kVillagePlaygroundTilePx + interaction.localRect.y * scale,
+                          interaction.localRect.w * scale, interaction.localRect.h * scale };
+    }
+
+    // DungeonGate fires on simple overlap (matching how the fixed approach-rect
+    // trigger always worked); every other service waits for an interact press.
+    bool VillageServiceTriggersOnEnter(VillageService service)
+    {
+        return service == VillageService::DungeonGate;
+    }
 
     Rectangle VillagePlaygroundFieldRect()
     {
@@ -3107,33 +3101,29 @@ namespace
 
 }
 
-void Engine::EnterVillagePlayground() { EnterVillageShared(true); }
-void Engine::EnterVillage() { EnterVillageShared(false); }
+void Engine::EnterVillage() { EnterVillageShared(); }
 
-void Engine::EnterVillageShared(bool sandboxMode)
+void Engine::EnterVillageShared()
 {
     LoadVillagePlaygroundSheets();
     LoadVillagePlaygroundCatalog();
     _villageShopNpcActive = false;
     _villageInsideInterior = false;
     _villageBuildMode = false;
-    _villageSandboxMode = sandboxMode;
     LoadVillageLayout();
     _villageCatalogScroll = 0.f;
     _villageActiveObjectIndex = _villageObjectCatalog.empty() ? -1 : 0;
-    _villagePlaygroundMessage = _villageObjectCatalog.empty() ? "No villageobject_*.txt assets saved yet" : (sandboxMode ? "Village tester: walk around, press B to build" : "Welcome back to the village");
-    if (!sandboxMode)
-        _villagePlaygroundMessage = _firstVillageVisit ? "Find Zeph at the shop." : "Welcome back to the village";
+    _villagePlaygroundMessage = _firstVillageVisit ? "Find Zeph at the shop." : "Welcome back to the village";
     _villagePlaygroundMessageTimer = 4.f;
     _player.Revive();
     _player.RestoreMana(_player.GetMaxMana());
     _player.SetCombatLocked(true);
     _player.SetDashAllowedWhileCombatLocked(true);
     _player.SetManaRegenPaused(false);
-    _player.SetWorldPos(sandboxMode ? Vector2{ VillagePlaygroundFieldRect().width * 0.5f, VillagePlaygroundFieldRect().height * 0.5f } : VillageGraveyardLocalToWorld(_villageGraveyardRespawnLocal));
+    _player.SetWorldPos(VillageGraveyardLocalToWorld(_villageGraveyardRespawnLocal));
     _cameraPos = _player.GetWorldPos();
     _shakeOffset = Vector2Zero();
-    _gameState = sandboxMode ? GameState::VillagePlayground : GameState::Village;
+    _gameState = GameState::Village;
 }
 
 bool Engine::VillageHasPlacedObject(const std::string& defName) const
@@ -3196,32 +3186,18 @@ void Engine::LoadVillagePlaygroundSheets()
     _villageGraveyardColliders.clear();
     _villageZephShopColliders.clear();
     std::string graveyardImage = "VillageGraveyard.png";
-    FILE* graveMeta = fopen(AssetPath("VillageAssets/VillageGraveyard.vasset").c_str(), "r");
-    if (graveMeta)
     {
-        char line[256];
-        while (fgets(line, sizeof(line), graveMeta))
+        VillageAssetData graveyardData;
+        if (VillageAssetLoader::Load(AssetPath("VillageAssets/VillageGraveyard.vasset"), graveyardData))
         {
-            char imageName[128] = {};
-            if (sscanf(line, "image %127s", imageName) == 1)
-            {
-                graveyardImage = imageName;
-                continue;
-            }
-
-            float cx = 0.f, cy = 0.f, cw = 0.f, ch = 0.f;
-            if (sscanf(line, "collider %f %f %f %f", &cx, &cy, &cw, &ch) == 4)
-            {
-                if (cw > 0.f && ch > 0.f) _villageGraveyardColliders.push_back(Rectangle{ cx, cy, cw, ch });
-                continue;
-            }
-
-            char markerName[64] = {}; float x = 0.f, y = 0.f;
-            if (sscanf(line, "marker %63s %f %f", markerName, &x, &y) != 3) continue;
-            if (strcmp(markerName, "Poe") == 0) _villageGraveyardPoeLocal = Vector2{ x, y };
-            else if (strcmp(markerName, "Respawn") == 0) _villageGraveyardRespawnLocal = Vector2{ x, y };
+            if (!graveyardData.imageFile.empty()) graveyardImage = graveyardData.imageFile;
+            for (const VaRect& collider : graveyardData.colliders)
+                if (collider.w > 0.f && collider.h > 0.f) _villageGraveyardColliders.push_back(VaToRaylib(collider));
+            if (const VAssetMarker* poe = graveyardData.FindMarkerByType(VillageMarkerType::Poe))
+                _villageGraveyardPoeLocal = VaToRaylib(poe->localPos);
+            if (const VAssetMarker* respawn = graveyardData.FindMarkerByType(VillageMarkerType::Respawn))
+                _villageGraveyardRespawnLocal = VaToRaylib(respawn->localPos);
         }
-        fclose(graveMeta);
     }
     _villageGraveyardTex = LoadTexture(AssetPath(TextFormat("VillageAssets/%s", graveyardImage.c_str())).c_str());
     if (_villageGraveyardTex.id == 0 && graveyardImage != "VillageGraveyard.png")
@@ -3231,31 +3207,16 @@ void Engine::LoadVillagePlaygroundSheets()
     _villageZephShopZephLocal = Vector2{ 50.22f, 124.20f };
     _villageZephShopColliders.clear();
     std::string zephShopImage = "ZephsShop.png";
-    FILE* zephMeta = fopen(AssetPath("VillageAssets/ZephsShop.vasset").c_str(), "r");
-    if (zephMeta)
     {
-        char line[256];
-        while (fgets(line, sizeof(line), zephMeta))
+        VillageAssetData zephData;
+        if (VillageAssetLoader::Load(AssetPath("VillageAssets/ZephsShop.vasset"), zephData))
         {
-            char imageName[128] = {};
-            if (sscanf(line, "image %127s", imageName) == 1)
-            {
-                zephShopImage = imageName;
-                continue;
-            }
-
-            float cx = 0.f, cy = 0.f, cw = 0.f, ch = 0.f;
-            if (sscanf(line, "collider %f %f %f %f", &cx, &cy, &cw, &ch) == 4)
-            {
-                if (cw > 0.f && ch > 0.f) _villageZephShopColliders.push_back(Rectangle{ cx, cy, cw, ch });
-                continue;
-            }
-
-            char markerName[64] = {}; float x = 0.f, y = 0.f;
-            if (sscanf(line, "marker %63s %f %f", markerName, &x, &y) != 3) continue;
-            if (strcmp(markerName, "Zeph") == 0) _villageZephShopZephLocal = Vector2{ x, y };
+            if (!zephData.imageFile.empty()) zephShopImage = zephData.imageFile;
+            for (const VaRect& collider : zephData.colliders)
+                if (collider.w > 0.f && collider.h > 0.f) _villageZephShopColliders.push_back(VaToRaylib(collider));
+            if (const VAssetMarker* zeph = zephData.FindMarkerByType(VillageMarkerType::Zeph))
+                _villageZephShopZephLocal = VaToRaylib(zeph->localPos);
         }
-        fclose(zephMeta);
     }
     _villageZephShopTex = LoadTexture(AssetPath(TextFormat("VillageAssets/%s", zephShopImage.c_str())).c_str());
     if (_villageZephShopTex.id == 0 && zephShopImage != "ZephsShop.png")
@@ -3266,20 +3227,6 @@ void Engine::LoadVillagePlaygroundSheets()
 void Engine::LoadVillagePlaygroundCatalog()
 {
     _villageObjectCatalog.clear();
-    auto scanFolder = [&](const char* folder)
-    {
-        FilePathList files = LoadDirectoryFiles(folder);
-        for (unsigned int i = 0; i < files.count; i++)
-        {
-            const char* fileName = GetFileName(files.paths[i]); if (!fileName) continue;
-            std::string name = fileName;
-            if (name.rfind("villageobject_", 0) != 0 || !IsFileExtension(fileName, ".txt")) continue;
-            std::string path = (strcmp(folder, ".") == 0) ? name : (std::string(folder) + "/" + name);
-            VillageRuntimeObjectDef def; if (LoadVillageRuntimeObject(path, def)) _villageObjectCatalog.push_back(def);
-        }
-        UnloadDirectoryFiles(files);
-    };
-    scanFolder("."); scanFolder("TestGame");
 
     FilePathList assetFiles = LoadDirectoryFiles(AssetFolderPath("VillageAssets").c_str());
     for (unsigned int i = 0; i < assetFiles.count; ++i)
@@ -3310,125 +3257,6 @@ void Engine::LoadVillagePlaygroundCatalog()
     std::sort(_villageObjectCatalog.begin(), _villageObjectCatalog.end(), [](const VillageRuntimeObjectDef& a, const VillageRuntimeObjectDef& b) { return a.name < b.name; });
 }
 
-bool Engine::LoadVillageRuntimeObject(const std::string& path, VillageRuntimeObjectDef& outDef) const
-{
-    FILE* f = fopen(AssetPath(path.c_str()).c_str(), "r");
-    if (!f) f = fopen(path.c_str(), "r");
-    if (!f) return false;
-
-    outDef = {};
-    outDef.path = path;
-    int minCol = INT_MAX, minRow = INT_MAX, maxCol = INT_MIN, maxRow = INT_MIN;
-    char line[512];
-    while (fgets(line, sizeof(line), f))
-    {
-        char name[128] = {};
-        if (sscanf(line, "object %127s", name) == 1) { outDef.name = name; continue; }
-        int cost = 0;
-        if (sscanf(line, "cost %d", &cost) == 1) { outDef.costGold = cost; continue; }
-        if (strncmp(line, "decor", 5) == 0) { outDef.isDecoration = true; continue; }
-
-        char layerChar = 0, sheetName[128] = {};
-        int localCol = 0, localRow = 0, sheet = -1, col = 0, row = 0;
-        if (sscanf(line, "part %c %d %d %d %d %d %127s", &layerChar, &localCol, &localRow, &sheet, &col, &row, sheetName) >= 6)
-        {
-            VillageRuntimePart part{};
-            part.layer = (layerChar == 'g') ? VillageObjectLayer::Ground : (layerChar == 'h') ? VillageObjectLayer::Overhead : VillageObjectLayer::Objects;
-            part.localCol = (short)localCol;
-            part.localRow = (short)localRow;
-            part.sheet = (short)sheet;
-            part.col = (short)col;
-            part.row = (short)row;
-            if (sheetName[0])
-            {
-                for (int i = 0; i < (int)_villagePlaygroundSheetNames.size(); ++i)
-                {
-                    if (_villagePlaygroundSheetNames[i] == sheetName) { part.sheet = (short)i; break; }
-                }
-            }
-            outDef.parts.push_back(part);
-            minCol = std::min(minCol, localCol);
-            minRow = std::min(minRow, localRow);
-            maxCol = std::max(maxCol, localCol);
-            maxRow = std::max(maxRow, localRow);
-            continue;
-        }
-
-        int w = 0, h = 0;
-        if (sscanf(line, "solid %d %d %d %d", &localCol, &localRow, &w, &h) == 4)
-        {
-            VillageRuntimeSolid solid{};
-            solid.localCol = (short)localCol;
-            solid.localRow = (short)localRow;
-            solid.w = (short)std::max(1, w);
-            solid.h = (short)std::max(1, h);
-            outDef.solids.push_back(solid);
-            continue;
-        }
-
-        char doorName[128] = {}, target[128] = {};
-        int doorId = 0, blocksClosed = 1, openAnim = -1;
-        if (sscanf(line, "door %d %127s pos=%d,%d size=%d,%d target=%127s blocks_closed=%d open_anim=%d",
-                   &doorId, doorName, &localCol, &localRow, &w, &h, target, &blocksClosed, &openAnim) >= 7)
-        {
-            VillageRuntimeDoor door{};
-            door.doorName = doorName;
-            door.localCol = (short)localCol;
-            door.localRow = (short)localRow;
-            door.w = (short)std::max(1, w);
-            door.h = (short)std::max(1, h);
-            door.targetInterior = target;
-            door.blocksWhenClosed = blocksClosed != 0;
-            door.openAnimationIndex = openAnim;
-            outDef.doors.push_back(door);
-            continue;
-        }
-
-        char npcName[128] = {}, assignment[128] = {};
-        if (sscanf(line, "npc %127s pos=%d,%d assignment=%127s", npcName, &localCol, &localRow, assignment) >= 3)
-        {
-            VillageRuntimeNpc npc{};
-            npc.npcName = npcName;
-            npc.localCol = (short)localCol;
-            npc.localRow = (short)localRow;
-            npc.assignment = assignment;
-            outDef.npcs.push_back(npc);
-            continue;
-        }
-    }
-    fclose(f);
-
-    if (outDef.name.empty())
-    {
-        std::string file = GetFileName(path.c_str());
-        size_t dot = file.find_last_of('.');
-        if (dot != std::string::npos) file = file.substr(0, dot);
-        const std::string prefix = "villageobject_";
-        if (file.rfind(prefix, 0) == 0) file = file.substr(prefix.size());
-        outDef.name = file;
-    }
-
-    if (!outDef.parts.empty() && minCol != INT_MAX)
-    {
-        for (VillageRuntimePart& part : outDef.parts) { part.localCol -= (short)minCol; part.localRow -= (short)minRow; }
-        for (VillageRuntimeSolid& solid : outDef.solids) { solid.localCol -= (short)minCol; solid.localRow -= (short)minRow; }
-        for (VillageRuntimeDoor& door : outDef.doors) { door.localCol -= (short)minCol; door.localRow -= (short)minRow; }
-        for (VillageRuntimeNpc& npc : outDef.npcs) { npc.localCol -= (short)minCol; npc.localRow -= (short)minRow; }
-        outDef.cols = std::max(1, maxCol - minCol + 1);
-        outDef.rows = std::max(1, maxRow - minRow + 1);
-    }
-
-    // PNG-authored Zeph shop: keep it in the build catalog, but let the asset
-    // dimensions drive the placement footprint so the ghost matches the image.
-    if (outDef.name == "ZephsShop" && _villageZephShopTex.id != 0)
-    {
-        outDef.cols = std::max(1, (int)std::ceil((_villageZephShopTex.width * kVillageZephShopAssetScale) / kVillagePlaygroundTilePx));
-        outDef.rows = std::max(1, (int)std::ceil((_villageZephShopTex.height * kVillageZephShopAssetScale) / kVillagePlaygroundTilePx));
-        outDef.costGold = 0;
-    }
-    return true;
-}
-
 bool Engine::LoadVillageRuntimeAssetObject(const std::string& path, VillageRuntimeObjectDef& outDef) const
 {
     VillageAssetData data;
@@ -3448,6 +3276,9 @@ bool Engine::LoadVillageRuntimeAssetObject(const std::string& path, VillageRunti
     outDef.uniqueInVillage = data.unique;
     outDef.removable = data.removable;
     outDef.serviceName = VillageAssetLoader::ToString(data.service);
+    outDef.service = data.service;
+    outDef.markers = data.markers;
+    outDef.interactions = data.interactions;
     outDef.pngScale = (outDef.name == "ZephsShop") ? kVillageZephShopAssetScale : 3.f;
     outDef.pngAnimated = data.animation.enabled;
     outDef.pngAnimCols = std::max(1, data.animation.columns);
@@ -3481,31 +3312,61 @@ int Engine::FindVillageObjectDefIndex(const std::string& defName) const
 
 void Engine::SaveVillageLayout() const
 {
-    if (_villageSandboxMode) return;
-    FILE* f = fopen(AssetPath("TestGame/village_layout.txt").c_str(), "w");
-    if (!f) f = fopen("TestGame/village_layout.txt", "w");
-    if (!f) return;
-    fprintf(f, "village_layout 1\n");
+    VillageLayout layout;   // defaults: 1920x1080, spawn=VillageGraveyard/Respawn, standard exit rect
     for (const VillagePlacedObject& placed : _villagePlacedObjects)
-        fprintf(f, "place %s %d %d\n", placed.defName.c_str(), placed.cellCol, placed.cellRow);
-    fclose(f);
+    {
+        if (placed.defIndex < 0 || placed.defIndex >= (int)_villageObjectCatalog.size()) continue;
+        const VillageRuntimeObjectDef& def = _villageObjectCatalog[placed.defIndex];
+        VillageLayoutObject object;
+        object.assetName = placed.defName;
+        object.worldOrigin = Vector2{ placed.cellCol * kVillagePlaygroundTilePx, placed.cellRow * kVillagePlaygroundTilePx };
+        object.scale = def.pngScale;
+        object.permanent = !def.removable;
+        layout.objects.push_back(object);
+    }
+    VillageLayoutLoader::Save(AssetPath("VillageAssets/VillageLayoutSave.vlayout"), layout);
 }
 
 void Engine::LoadVillageLayout()
 {
     _villagePlacedObjects.clear();
-    if (_villageSandboxMode) return;
 
-    VillageLayout layout = VillageLayoutLoader::Load(AssetPath("VillageAssets/VillageLayout.vlayout"));
+    // Prefer the player's own save; fall back to the authored "factory
+    // defaults" layout if it doesn't exist yet (first launch) or was deleted.
+    std::string savePath = AssetPath("VillageAssets/VillageLayoutSave.vlayout");
+    FILE* saveProbe = fopen(savePath.c_str(), "r");
+    bool hasSave = saveProbe != nullptr;
+    if (saveProbe) fclose(saveProbe);
+    VillageLayout layout = hasSave
+        ? VillageLayoutLoader::Load(savePath)
+        : VillageLayoutLoader::Load(AssetPath("VillageAssets/VillageLayout.vlayout"));
+
+    bool hasGate = false;
     for (const VillageLayoutObject& object : layout.objects)
     {
         if (object.assetName == "VillageGraveyard") continue; // drawn by its dedicated runtime path
+        if (object.assetName == "VillageGate") hasGate = true;
         VillagePlacedObject placed{};
         placed.defName = object.assetName;
         placed.defIndex = FindVillageObjectDefIndex(placed.defName);
         placed.cellCol = (int)std::round(object.worldOrigin.x / kVillagePlaygroundTilePx);
         placed.cellRow = (int)std::round(object.worldOrigin.y / kVillagePlaygroundTilePx);
-        if (placed.defIndex >= 0) _villagePlacedObjects.push_back(placed);
+        if (placed.defIndex >= 0)
+            _villagePlacedObjects.push_back(placed);
+        else
+            TraceLog(LOG_WARNING, "Village layout: unknown asset '%s' skipped (its .vasset may have been removed)", object.assetName.c_str());
+    }
+    if (!hasGate)
+    {
+        // Repair: a save written before the gate became a real catalog object
+        // (or with a corrupted/edited object list) won't have it. Synthesize
+        // one at its fixed position so the village never ships without a way
+        // to leave.
+        VillagePlacedObject gate{};
+        gate.defName = "VillageGate";
+        gate.defIndex = FindVillageObjectDefIndex("VillageGate");
+        gate.cellCol = 18; gate.cellRow = 0;
+        if (gate.defIndex >= 0) _villagePlacedObjects.push_back(gate);
     }
     RefreshVillageShopNpc();
 }
@@ -3556,7 +3417,7 @@ bool Engine::VillagePlaygroundCanPlace(int defIndex, int cellCol, int cellRow) c
 {
     if (defIndex < 0 || defIndex >= (int)_villageObjectCatalog.size()) return false;
     const VillageRuntimeObjectDef& def = _villageObjectCatalog[defIndex];
-    if (!_villageSandboxMode && VillageObjectIsOneTimeService(def) && VillageHasPlacedObject(def.name)) return false;
+    if (VillageObjectIsOneTimeService(def) && VillageHasPlacedObject(def.name)) return false;
 
     Rectangle footprint{ cellCol * kVillagePlaygroundTilePx, cellRow * kVillagePlaygroundTilePx,
                          def.cols * kVillagePlaygroundTilePx, def.rows * kVillagePlaygroundTilePx };
@@ -3667,7 +3528,6 @@ Vector2 Engine::VillageRandomStandablePoint() const
 
 void Engine::SyncVillageCitizenCount()
 {
-    if (_villageSandboxMode) return;
     int buildingCount = 0;
     for (const VillagePlacedObject& placed : _villagePlacedObjects)
     {
@@ -3781,9 +3641,21 @@ void Engine::RefreshVillageShopNpc()
     {
         if (placed.defIndex < 0 || placed.defIndex >= (int)_villageObjectCatalog.size()) continue;
         const VillageRuntimeObjectDef& def = _villageObjectCatalog[placed.defIndex];
+        if (def.service != VillageService::Shop) continue;
+
+        // TODO(Phase 2): fold this hardcoded Zeph draw+collision special case
+        // into the generic pngTexture path; until then, the specially-loaded
+        // Zeph texture's own local marker takes priority when present.
         if (def.name == "ZephsShop" && _villageZephShopTex.id != 0)
         {
             Vector2 npcPos = VillageZephShopLocalToWorld(placed.cellCol, placed.cellRow, _villageZephShopZephLocal);
+            _shop.Enter(npcPos, _player, _currentAct);
+            _villageShopNpcActive = true;
+            return;
+        }
+        if (const VAssetMarker* zeph = FindVillageMarker(def.markers, VillageMarkerType::Zeph))
+        {
+            Vector2 npcPos = VillageObjectMarkerWorldPos(*zeph, placed.cellCol, placed.cellRow, def.pngScale);
             _shop.Enter(npcPos, _player, _currentAct);
             _villageShopNpcActive = true;
             return;
@@ -3797,6 +3669,91 @@ void Engine::RefreshVillageShopNpc()
             _villageShopNpcActive = true;
             return;
         }
+    }
+}
+
+// The one dispatch point every future village service plugs into: one new
+// `case` here (plus, if the service is real content, a .vasset with that
+// service authored) is the whole cost of adding a service. Shop/Graveyard have
+// their own dedicated flows (NPC proximity, hardcoded respawn) and are skipped
+// here; DungeonGate triggers on simple overlap rather than a key press and is
+// handled by TriggerVillageDungeonGate() instead.
+void Engine::UpdateVillagePlacedObjectServices(float dt)
+{
+    (void)dt;
+    bool gamepadInteract = _gamepad.isActive && (_gamepad.attackPressed || _gamepad.dashPressed);
+    bool interactPressed = IsKeyPressed(KEY_E) || gamepadInteract;
+
+    for (const VillagePlacedObject& placed : _villagePlacedObjects)
+    {
+        if (placed.defIndex < 0 || placed.defIndex >= (int)_villageObjectCatalog.size()) continue;
+        const VillageRuntimeObjectDef& def = _villageObjectCatalog[placed.defIndex];
+        if (def.service == VillageService::None || def.service == VillageService::Shop ||
+            def.service == VillageService::Graveyard)
+            continue;
+
+        Rectangle triggerRect;
+        if (!def.interactions.empty())
+        {
+            triggerRect = VillageObjectInteractionWorldRect(def.interactions[0], placed.cellCol, placed.cellRow, def.pngScale);
+        }
+        else
+        {
+            triggerRect = VillagePlacedObjectWorldRect(placed, nullptr);
+            constexpr float kMargin = 24.f;
+            triggerRect.x -= kMargin; triggerRect.y -= kMargin;
+            triggerRect.width += kMargin * 2.f; triggerRect.height += kMargin * 2.f;
+        }
+        if (!CheckCollisionPointRec(_player.GetWorldPos(), triggerRect)) continue;
+        if (!VillageServiceTriggersOnEnter(def.service) && !interactPressed) continue;
+
+        switch (def.service)
+        {
+        case VillageService::Training:
+            // Same entry sequence as Poe's fixed altar (Engine.cpp, near
+            // VillageGraveyardLocalToWorld) — proves meta-progression access
+            // works as a normal, independently-placeable building too.
+            _metaShopCursor      = 0;
+            _metaShopOpenTimer   = 0.25f;
+            _metaShopReturnState = _gameState;
+            _poeGreetingIdx      = GetRandomValue(0, kPoeGreetingCount - 1);
+            _gameState           = GameState::MetaShop;
+            return;
+        case VillageService::DungeonGate:
+            // In practice unreachable today: the gate's own footprint has no
+            // authored collider, so it falls back to being fully solid (see
+            // objectBlockingRects) and the player can never stand on it — the
+            // fixed VillageGateApproachRect() south of it is what actually
+            // fires. Kept here so the switch stays exhaustive and this path is
+            // ready once Phase 2 makes the trigger area fully data-driven.
+            TriggerVillageDungeonGate();
+            return;
+        default:
+            _villagePlaygroundMessage = std::string(VillageAssetLoader::ToString(def.service)) + " coming soon";
+            _villagePlaygroundMessageTimer = 2.f;
+            return;
+        }
+    }
+}
+
+void Engine::TriggerVillageDungeonGate()
+{
+    if (_firstVillageVisit)
+    {
+        _villagePlaygroundMessage = "Speak with Zeph before leaving.";
+        _villagePlaygroundMessageTimer = 2.f;
+        return;
+    }
+    _villagePlaygroundMessage = "";
+    if (_runSessionData.IsPausedInVillage())
+    {
+        _runSessionData.Resume();
+        OpenWorldMap();
+    }
+    else
+    {
+        _pendingNewRunFromVillage = false;
+        StartMainRun();
     }
 }
 
@@ -3922,7 +3879,7 @@ void Engine::DrawVillageInterior()
 
 void Engine::UpdateVillagePlayground(float dt)
 {
-    if (MO_DEV_TOOLS && !_villageSandboxMode && _firstVillageVisit && _demoCompleted && IsKeyPressed(KEY_F8))
+    if (MO_DEV_TOOLS && _firstVillageVisit && _demoCompleted && IsKeyPressed(KEY_F8))
     {
         _villageIntroDialogueActive = false;
         _villageIntroDialogueLine = 0;
@@ -3939,15 +3896,18 @@ void Engine::UpdateVillagePlayground(float dt)
     }
 
     if (_villagePlaygroundMessageTimer > 0.f) _villagePlaygroundMessageTimer -= dt;
-    if (_villageSandboxMode && IsKeyPressed(KEY_B)) _villageBuildMode = !_villageBuildMode;
-    if (!_villageSandboxMode) _villageBuildMode = false;
-    if (_villageSandboxMode && IsKeyPressed(KEY_R))
+    if (IsKeyPressed(KEY_B))
     {
-        _villagePlacedObjects.clear();
-        _villageCitizens.clear();
-        _villageShopNpcActive = false;
-        _villagePlaygroundMessage = "Village tester cleared";
-        _villagePlaygroundMessageTimer = 2.f;
+        _villageBuildMode = !_villageBuildMode;
+        if (!_villageBuildMode && _villageIsRelocating)
+        {
+            // Leaving build mode mid-move: put the picked-up object back
+            // rather than letting it silently vanish from the village.
+            _villagePlacedObjects.push_back(_villageRelocatingOriginal);
+            _villageIsRelocating = false;
+            RefreshVillageShopNpc();
+            SyncVillageCitizenCount();
+        }
     }
 
     bool tutorialLockActive = false;
@@ -3979,8 +3939,10 @@ void Engine::UpdateVillagePlayground(float dt)
                                 mouse.y + _cameraPos.y - kVirtualHeight * 0.5f };
             int cellCol = (int)floorf(mouseWorld.x / kVillagePlaygroundTilePx);
             int cellRow = (int)floorf(mouseWorld.y / kVillagePlaygroundTilePx);
-            if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT))
+            if (IsKeyDown(KEY_M) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !_villageIsRelocating)
             {
+                // Pick up an already-placed object: hold M and click it, then
+                // click a new spot to drop it (no cost either way).
                 for (int i = (int)_villagePlacedObjects.size() - 1; i >= 0; --i)
                 {
                     VillagePlacedObject& placed = _villagePlacedObjects[i];
@@ -3990,13 +3952,44 @@ void Engine::UpdateVillagePlayground(float dt)
                                     def.cols * kVillagePlaygroundTilePx, def.rows * kVillagePlaygroundTilePx };
                     if (CheckCollisionPointRec(mouseWorld, rect))
                     {
-                        if (!_villageSandboxMode && VillageObjectIsPermanentService(def))
+                        if (VillageObjectIsPermanentService(def))
+                        {
+                            _villagePlaygroundMessage = "This service building cannot be moved.";
+                            _villagePlaygroundMessageTimer = 2.f;
+                            break;
+                        }
+                        _villageRelocatingOriginal = placed;
+                        _villageIsRelocating = true;
+                        _villageActiveObjectIndex = placed.defIndex;
+                        _villagePlacedObjects.erase(_villagePlacedObjects.begin() + i);
+                        RefreshVillageShopNpc();
+                        SyncVillageCitizenCount();
+                        _villagePlaygroundMessage = "Pick a new spot, then click to drop.";
+                        _villagePlaygroundMessageTimer = 3.f;
+                        break;
+                    }
+                }
+            }
+            else if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT))
+            {
+                bool removedSomething = false;
+                for (int i = (int)_villagePlacedObjects.size() - 1; i >= 0; --i)
+                {
+                    VillagePlacedObject& placed = _villagePlacedObjects[i];
+                    if (placed.defIndex < 0 || placed.defIndex >= (int)_villageObjectCatalog.size()) continue;
+                    const VillageRuntimeObjectDef& def = _villageObjectCatalog[placed.defIndex];
+                    Rectangle rect{ placed.cellCol * kVillagePlaygroundTilePx, placed.cellRow * kVillagePlaygroundTilePx,
+                                    def.cols * kVillagePlaygroundTilePx, def.rows * kVillagePlaygroundTilePx };
+                    if (CheckCollisionPointRec(mouseWorld, rect))
+                    {
+                        removedSomething = true;
+                        if (VillageObjectIsPermanentService(def))
                         {
                             _villagePlaygroundMessage = "This service building cannot be removed.";
                             _villagePlaygroundMessageTimer = 2.f;
                             break;
                         }
-                        if (!_villageSandboxMode && def.costGold > 0) _player.AddGold(def.costGold);
+                        if (def.costGold > 0) _player.AddGold(def.costGold);
                         _villagePlacedObjects.erase(_villagePlacedObjects.begin() + i);
                         SaveVillageLayout();
                         RefreshVillageShopNpc();
@@ -4004,6 +3997,10 @@ void Engine::UpdateVillagePlayground(float dt)
                         break;
                     }
                 }
+                // Right-click on empty ground deselects the active catalog pick
+                // (ESC already opens the pause menu in this state, so it can't
+                // double as a cancel key here).
+                if (!removedSomething) _villageActiveObjectIndex = -1;
             }
             else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && _villageActiveObjectIndex >= 0)
             {
@@ -4015,14 +4012,28 @@ void Engine::UpdateVillagePlayground(float dt)
                 else if (VillagePlaygroundCanPlace(_villageActiveObjectIndex, cellCol, cellRow))
                 {
                     const VillageRuntimeObjectDef& def = _villageObjectCatalog[_villageActiveObjectIndex];
-                    if (!_villageSandboxMode && _player.GetGold() < def.costGold)
+                    if (_villageIsRelocating)
+                    {
+                        VillagePlacedObject placed = _villageRelocatingOriginal;
+                        placed.cellCol = cellCol;
+                        placed.cellRow = cellRow;
+                        _villagePlacedObjects.push_back(placed);
+                        _villageIsRelocating = false;
+                        _villageActiveObjectIndex = -1;
+                        SaveVillageLayout();
+                        RefreshVillageShopNpc();
+                        SyncVillageCitizenCount();
+                        _villagePlaygroundMessage = "Moved.";
+                        _villagePlaygroundMessageTimer = 1.5f;
+                    }
+                    else if (_player.GetGold() < def.costGold)
                     {
                         _villagePlaygroundMessage = "Not enough gold";
                         _villagePlaygroundMessageTimer = 2.f;
                     }
                     else
                     {
-                        if (!_villageSandboxMode && def.costGold > 0) _player.AddGold(-def.costGold);
+                        if (def.costGold > 0) _player.AddGold(-def.costGold);
                         VillagePlacedObject placed{};
                         placed.defName = def.name;
                         placed.defIndex = _villageActiveObjectIndex;
@@ -4032,7 +4043,7 @@ void Engine::UpdateVillagePlayground(float dt)
                         SaveVillageLayout();
                         RefreshVillageShopNpc();
                         SyncVillageCitizenCount();
-                        if (!_villageSandboxMode && def.name == "ZephsShop")
+                        if (def.name == "ZephsShop")
                         {
                             _villageBuildMode = false;
                             _villagePlaygroundMessage = "Zeph has opened shop in the village.";
@@ -4043,7 +4054,7 @@ void Engine::UpdateVillagePlayground(float dt)
                 else
                 {
                     const VillageRuntimeObjectDef& def = _villageObjectCatalog[_villageActiveObjectIndex];
-                    if (!_villageSandboxMode && VillageObjectIsOneTimeService(def) && VillageHasPlacedObject(def.name))
+                    if (VillageObjectIsOneTimeService(def) && VillageHasPlacedObject(def.name))
                         _villagePlaygroundMessage = "Zeph's shop is already built.";
                     else
                         _villagePlaygroundMessage = "That spot is blocked.";
@@ -4125,25 +4136,9 @@ void Engine::UpdateVillagePlayground(float dt)
             }
         }
 
-        if (!_villageSandboxMode && CheckCollisionPointRec(_player.GetWorldPos(), VillageGateApproachRect()))
+        if (CheckCollisionPointRec(_player.GetWorldPos(), VillageGateApproachRect()))
         {
-            if (_firstVillageVisit)
-            {
-                _villagePlaygroundMessage = "Speak with Zeph before leaving.";
-                _villagePlaygroundMessageTimer = 2.f;
-                return;
-            }
-            _villagePlaygroundMessage = "";
-            if (_runSessionData.IsPausedInVillage())
-            {
-                _runSessionData.Resume();
-                OpenWorldMap();
-            }
-            else
-            {
-                _pendingNewRunFromVillage = false;
-                StartMainRun();
-            }
+            TriggerVillageDungeonGate();
             return;
         }
 
@@ -4164,6 +4159,8 @@ void Engine::UpdateVillagePlayground(float dt)
                 }
             }
         }
+
+        UpdateVillagePlacedObjectServices(dt);
     }
 
     Rectangle field = VillagePlaygroundFieldRect();
@@ -4458,12 +4455,12 @@ void Engine::DrawVillagePlayground()
     _player.DrawPlayer(_cameraPos);
     drawPlacedLayer(VillageObjectLayer::Overhead);
 
-    if (!_villageSandboxMode && !_villageBuildMode && CheckCollisionPointRec(_player.GetWorldPos(), VillageGateApproachRect()))
+    if (!_villageBuildMode && CheckCollisionPointRec(_player.GetWorldPos(), VillageGateApproachRect()))
         DrawText("Head north when you are ready", 24, 92, 24, GOLD);
 
     DrawHUD(true);
 
-    if (!_villageSandboxMode && _firstVillageVisit && _demoCompleted)
+    if (_firstVillageVisit && _demoCompleted)
         DrawText("[F8] Skip Onboarding", (int)kVirtualWidth - 260, 22, 20, Fade(RAYWHITE, 0.75f));
 
     bool tutorialLockActive = false;
@@ -4474,16 +4471,26 @@ void Engine::DrawVillagePlayground()
         DrawRectangleRounded(panel, 0.08f, 8, Fade(Color{ 18, 20, 18, 255 }, 0.82f));
         DrawRectangleRoundedLines(panel, 0.08f, 8, Color{ 100, 120, 90, 255 });
         DrawText("Build Mode", (int)panel.x + 14, (int)panel.y + 12, 22, GOLD);
-        DrawText(_villageSandboxMode ? "B walk mode | R clear | tester is free" : TextFormat("B walk mode | your gold: %d", _player.GetGold()),
+        DrawText(TextFormat("B walk mode | your gold: %d", _player.GetGold()),
                  (int)panel.x + 14, (int)panel.y + 40, 15, Fade(RAYWHITE, 0.75f));
-        DrawText(_villageSandboxMode ? "Left place | right remove | sandbox freely tests" : "Left place | right remove (services stay)",
+        DrawText(_villageIsRelocating ? "Pick a new spot, click to drop | right-click empty ground to cancel select"
+                                       : "Left place | right remove | hold M+click to move (services stay)",
                  (int)panel.x + 14, (int)panel.y + 60, 15, Fade(RAYWHITE, 0.75f));
         if (_villageActiveObjectIndex >= 0 && _villageActiveObjectIndex < (int)_villageObjectCatalog.size())
         {
             const VillageRuntimeObjectDef& selected = _villageObjectCatalog[_villageActiveObjectIndex];
-            DrawText(TextFormat("Selected: %s", selected.name.c_str()), (int)panel.x + 14, (int)panel.y + 84, 16, RAYWHITE);
-            const char* selectedCostText = selected.costGold > 0 ? TextFormat("%dg", selected.costGold) : "free";
-            std::string selectedDetail = TextFormat("Cost: %s | Footprint: %dx%d | %s", selectedCostText, selected.cols, selected.rows, VillageObjectRuleLabel(selected));
+            DrawText(TextFormat("Selected: %s%s", selected.name.c_str(), _villageIsRelocating ? " (moving)" : ""),
+                     (int)panel.x + 14, (int)panel.y + 84, 16, RAYWHITE);
+            std::string selectedDetail;
+            if (_villageIsRelocating)
+            {
+                selectedDetail = TextFormat("Footprint: %dx%d | drop to relocate, no extra cost", selected.cols, selected.rows);
+            }
+            else
+            {
+                const char* selectedCostText = selected.costGold > 0 ? TextFormat("%dg", selected.costGold) : "free";
+                selectedDetail = TextFormat("Cost: %s | Footprint: %dx%d | %s", selectedCostText, selected.cols, selected.rows, VillageObjectRuleLabel(selected));
+            }
             DrawText(selectedDetail.c_str(), (int)panel.x + 14, (int)panel.y + 104, 15, Fade(RAYWHITE, 0.72f));
         }
 
@@ -4503,7 +4510,7 @@ void Engine::DrawVillagePlayground()
             if (locked) DrawText("locked", (int)(row.x + row.width - 132), (int)row.y + 11, 14, Fade(RAYWHITE, 0.4f));
             else
             {
-                const bool alreadyBuilt = !_villageSandboxMode && VillageObjectIsOneTimeService(entry) && VillageHasPlacedObject(entry.name);
+                const bool alreadyBuilt = VillageObjectIsOneTimeService(entry) && VillageHasPlacedObject(entry.name);
                 const char* costText = entry.costGold > 0 ? TextFormat("%dg", entry.costGold) : "free";
                 DrawText(costText, (int)(row.x + 170), (int)row.y + 11, 14, GOLD);
                 DrawText(TextFormat("%dx%d", entry.cols, entry.rows), (int)(row.x + 224), (int)row.y + 11, 14, Fade(RAYWHITE, 0.68f));
@@ -4512,10 +4519,6 @@ void Engine::DrawVillagePlayground()
         }
         if (_villageObjectCatalog.empty()) DrawText("No saved village objects yet", (int)rows.x + 10, (int)rows.y + 18, 20, Fade(RAYWHITE, 0.75f));
         EndScissorMode();
-    }
-    else if (_villageSandboxMode)
-    {
-        DrawText("[B] Build mode", 24, (int)(kVirtualHeight - 42), 22, Color{ 150, 170, 200, 220 });
     }
 
     if (tutorialLockActive)
@@ -4547,9 +4550,6 @@ void Engine::Draw()
     case GameState::Menu:
     {
         _menu.Draw();
-
-        // Bestiary + Daily Run hints — bottom-left corner.
-        DrawText("[B] Bestiary    [T] Daily Run", 24, (int)(kVirtualHeight - 42), 22, Color{ 150, 170, 200, 220 });
 
         // Ascension selector overlay (only once the player has unlocked tier 1+).
         if (_meta.GetMaxAscensionUnlocked() > 0)
@@ -4590,7 +4590,7 @@ void Engine::Draw()
                 // Show the map dimmed behind the pause menu.
                 _worldMap.Draw(_player);
             }
-            else if (_stateBeforePause == GameState::Village || _stateBeforePause == GameState::VillagePlayground)
+            else if (_stateBeforePause == GameState::Village)
             {
                 DrawVillagePlayground();
             }
@@ -4686,10 +4686,6 @@ void Engine::Draw()
         DrawRelicChoice();
         break;
 
-    case GameState::Bestiary:
-        DrawBestiary();
-        break;
-
     case GameState::TileMapper:
         _tileMapper.Draw();
         break;
@@ -4710,7 +4706,6 @@ void Engine::Draw()
         _mapEditor.Draw();
         break;
 
-    case GameState::VillagePlayground:
     case GameState::Village:
         DrawVillagePlayground();
         break;
@@ -11663,7 +11658,7 @@ void Engine::HandlePlayerDeathMetaPenalty()
     _meta.SetGoldCarryover(0);
     _player.SetGold(0);
     _player.TakeCells();
-    _meta.Save();   // persist bestiary kills tallied this run
+    _meta.Save();
 }
 
 // ── Death -> Poe revive cutscene ───────────────────────────────────────────────
@@ -12607,81 +12602,6 @@ void Engine::ClearRunModifiers()
     _player.SetContractGoldMult(1.f);
     _player.SetContractXpMult(1.f);
     _contractToastTimer = 0.f;
-}
-
-// =============================================================================
-// Bestiary — a catalogue of every foe with lifetime kill counts (#20)
-// =============================================================================
-static const char* kBestiaryCatalogue[] = {
-    // Regular foes
-    "Grunt", "Slime", "Skeleton Archer", "Flame Wisp", "Sporeling", "Shieldbearer",
-    "Phantom", "Bomber Imp", "Warchief", "Living Blade", "Toxic Vermin",
-    // Bosses / elites
-    "Cyclops", "Ogre", "Molarbeast", "Abyss Slime", "Pumpkin Jack", "Minotaur",
-    "Werewolf", "Chomp Bug", "Osiris", "Titan Guard", "Ancient Bear",
-};
-static const int kBestiaryCatalogueCount = (int)(sizeof(kBestiaryCatalogue) / sizeof(kBestiaryCatalogue[0]));
-
-void Engine::UpdateBestiary()
-{
-    _gamepad.Update(_gamepadBindingsEdit);
-    if (IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_B) || IsKeyPressed(KEY_ENTER) ||
-        (_gamepad.isActive && (_gamepad.backPressed || _gamepad.menuConfirmPressed)))
-    {
-        _gameState = _bestiaryReturnState;
-        if (_bestiaryReturnState == GameState::Menu) _menu.Init();
-    }
-}
-
-void Engine::DrawBestiary()
-{
-    const float sw = (float)kVirtualWidth;
-    const float sh = (float)kVirtualHeight;
-    DrawScrollingCheckerboard(sw, sh, Color{ 18, 22, 30, 255 }, Color{ 24, 28, 38, 255 }, 16.f, 11.f);
-
-    const char* title = "BESTIARY";
-    DrawText(title, (int)(sw * 0.5f - MeasureText(title, 70) * 0.5f), 54, 70, RAYWHITE);
-
-    const auto& kills = _meta.GetBestiary();
-    int totalKinds = 0, discovered = 0, totalKills = 0;
-
-    const int cols = 4;
-    const float cardW = 400.f, cardH = 110.f, gapX = 30.f, gapY = 18.f;
-    const float gridW = cols * cardW + (cols - 1) * gapX;
-    const float startX = (sw - gridW) * 0.5f;
-    const float startY = 168.f;
-
-    for (int i = 0; i < kBestiaryCatalogueCount; i++)
-    {
-        const char* name = kBestiaryCatalogue[i];
-        auto it = kills.find(name);
-        int count = (it != kills.end()) ? it->second : 0;
-        bool known = count > 0;
-        totalKinds++;
-        if (known) { discovered++; totalKills += count; }
-
-        int col = i % cols, row = i / cols;
-        Rectangle card{ startX + col * (cardW + gapX), startY + row * (cardH + gapY), cardW, cardH };
-
-        DrawRectangleRounded(card, 0.10f, 6, known ? Color{ 34, 42, 54, 235 } : Color{ 26, 28, 34, 220 });
-        DrawRectangleRoundedLines(card, 0.10f, 6, known ? Color{ 90, 130, 170, 255 } : Color{ 70, 74, 84, 255 });
-
-        if (known)
-        {
-            DrawText(name, (int)(card.x + 20.f), (int)(card.y + 20.f), 30, RAYWHITE);
-            DrawText(TextFormat("Slain: %d", count), (int)(card.x + 20.f), (int)(card.y + 64.f), 26, Color{ 150, 220, 170, 255 });
-        }
-        else
-        {
-            DrawText("? ? ?", (int)(card.x + 20.f), (int)(card.y + 20.f), 30, Color{ 120, 124, 134, 255 });
-            DrawText("Not yet encountered", (int)(card.x + 20.f), (int)(card.y + 66.f), 22, Color{ 100, 104, 114, 255 });
-        }
-    }
-
-    const char* summary = TextFormat("Discovered %d / %d      Total kills: %d", discovered, totalKinds, totalKills);
-    DrawText(summary, (int)(sw * 0.5f - MeasureText(summary, 28) * 0.5f), (int)(sh - 96.f), 28, Color{ 200, 200, 215, 255 });
-    const char* hint = "ESC / B: Back";
-    DrawText(hint, (int)(sw * 0.5f - MeasureText(hint, 24) * 0.5f), (int)(sh - 56.f), 24, Color{ 160, 164, 178, 255 });
 }
 
 // =============================================================================
@@ -14457,18 +14377,6 @@ Enemy* Engine::SpawnEliteMiniboss(Vector2 pos)
 // =============================================================================
 // Class select + main-run start
 // =============================================================================
-int Engine::ComputeDailySeed() const
-{
-    time_t now = time(nullptr);
-    struct tm lt;
-#ifdef _WIN32
-    localtime_s(&lt, &now);
-#else
-    lt = *localtime(&now);
-#endif
-    return (lt.tm_year + 1900) * 10000 + (lt.tm_mon + 1) * 100 + lt.tm_mday;
-}
-
 void Engine::StartMainRun()
 {
     _debug.Deactivate();
@@ -14487,12 +14395,7 @@ void Engine::StartMainRun()
     _runSessionData.Begin();
     _player.LearnAbility(StarterAbilityForClass(_player.GetClass()));
 
-    // Daily runs use a fixed seed so everyone shares the same dungeon that day;
-    // normal runs reseed from the clock so each one is different.
-    if (_isDailyRun)
-        SetRandomSeed((unsigned int)_dailySeed);
-    else
-        SetRandomSeed((unsigned int)time(nullptr));
+    SetRandomSeed((unsigned int)time(nullptr));
 
     _currentBiome = Biome::Forest;
     _pendingBiome = _currentBiome;
@@ -15170,21 +15073,15 @@ void Engine::DrawEnemyProjectiles(Vector2 worldOffset) const
 void Engine::SpawnPoisonCloud(Vector2 pos, float radius)
 {
     PoisonCloud cloud;
-    cloud.pos    = pos;
-    cloud.timer  = 5.5f;
-    cloud.radius = radius;
+    cloud.pos      = pos;
+    cloud.timer    = 5.5f;
+    cloud.radius   = radius;
+    cloud.armDelay = Balance::Rhythm::kPoisonCloudArmDelaySeconds;
     _poisonClouds.push_back(cloud);
 
-    // Persistent visual is now an animated poison-pool sprite (FX_BossPoisonPool)
-    // instead of prototype Raylib ellipses. The cloud above keeps its own circular
-    // collision/damage; this decal only draws it, and lives exactly as long.
-    const int fx = (int)BossFx::PoisonPool;
-    if (fx < (int)_bossFx.size() && _bossFx[fx].id != 0 && _bossFxFrames[fx] > 0)
-    {
-        const float decalScale = (2.f * radius) / 64.f;   // 64px cell → cover the radius
-        _vfx.SpawnHazardDecal(&_bossFx[fx], pos, _bossFxFrames[fx], decalScale, cloud.timer,
-                              Color{ 220, 255, 200, 235 });
-    }
+    // The persistent decal + damage collision are deferred to UpdatePoisonClouds
+    // once armDelay elapses — a tick-down warning ring (DrawPoisonClouds)
+    // telegraphs the cloud instead of it appearing/damaging instantly on death.
 }
 
 void Engine::UpdatePoisonClouds(float dt)
@@ -15194,17 +15091,37 @@ void Engine::UpdatePoisonClouds(float dt)
 
     for (int i = (int)_poisonClouds.size() - 1; i >= 0; --i)
     {
-        _poisonClouds[i].timer -= dt;
-        if (_poisonClouds[i].timer <= 0.f)
+        PoisonCloud& cloud = _poisonClouds[i];
+
+        if (cloud.armDelay > 0.f)
+        {
+            cloud.armDelay -= dt;
+            if (cloud.armDelay > 0.f)
+                continue;   // still ticking down - no decal, no damage, no lifetime decay yet
+            cloud.armDelay = 0.f;
+
+            // Armed: spawn the persistent visual now; its own lifetime clock
+            // starts here, matching cloud.timer below (untouched by the delay).
+            const int fx = (int)BossFx::PoisonPool;
+            if (fx < (int)_bossFx.size() && _bossFx[fx].id != 0 && _bossFxFrames[fx] > 0)
+            {
+                const float decalScale = (2.f * cloud.radius) / 64.f;   // 64px cell -> cover the radius
+                _vfx.SpawnHazardDecal(&_bossFx[fx], cloud.pos, _bossFxFrames[fx], decalScale, cloud.timer,
+                                      Color{ 220, 255, 200, 235 });
+            }
+        }
+
+        cloud.timer -= dt;
+        if (cloud.timer <= 0.f)
         {
             _poisonClouds.erase(_poisonClouds.begin() + i);
             continue;
         }
 
         if (_poisonDamageCooldown <= 0.f && _player.IsAlive() &&
-            Vector2Distance(_poisonClouds[i].pos, _player.GetFeetWorldPos()) < _poisonClouds[i].radius)
+            Vector2Distance(cloud.pos, _player.GetFeetWorldPos()) < cloud.radius)
         {
-            _player.TakeFractionalDamage(0.25f, _poisonClouds[i].pos);
+            _player.TakeFractionalDamage(0.25f, cloud.pos);
             _poisonDamageCooldown = 0.7f;
         }
     }
@@ -15299,11 +15216,33 @@ void Engine::DrawWarlockMinions(Vector2 worldOffset) const
 
 void Engine::DrawPoisonClouds(Vector2 worldOffset) const
 {
-    // The poison pool's visual is now a looping FX_BossPoisonPool decal spawned in
-    // SpawnPoisonCloud (drawn by VFXManager), so there is no prototype Raylib shape
-    // to render here anymore. Kept as a hook in case a future overlay (contact
-    // shadow, edge glow) wants to layer on top of the sprite.
-    (void)worldOffset;
+    // Armed clouds' persistent visual is a looping FX_BossPoisonPool decal
+    // spawned in UpdatePoisonClouds (drawn by VFXManager) - nothing to do here
+    // for those. A cloud still ticking down its arm delay has no decal yet, so
+    // draw a shrinking toxic-green warning ring instead: a tick-down-then-
+    // explode telegraph, procedural raylib only (matches the reinforcement
+    // spawn telegraph's visual language, see DrawPendingEnemySpawns).
+    constexpr float kArmDelayTotal = Balance::Rhythm::kPoisonCloudArmDelaySeconds;
+    constexpr Color kPoisonWarnColor{ 140, 235, 90, 255 };
+
+    for (const PoisonCloud& cloud : _poisonClouds)
+    {
+        if (cloud.armDelay <= 0.f) continue;
+
+        Vector2 screenPos = Vector2Add(cloud.pos, worldOffset);
+        screenPos.x += kVirtualWidth  / 2.f;
+        screenPos.y += kVirtualHeight / 2.f;
+
+        // Shrinks toward the final radius as the delay elapses, with a quick
+        // pulse so it reads as actively ticking down rather than static.
+        const float elapsed  = kArmDelayTotal - cloud.armDelay;
+        const float progress = std::clamp(elapsed / kArmDelayTotal, 0.f, 1.f);
+        const float pulse    = 0.5f + 0.5f * sinf(elapsed * 9.f);
+        const float radius   = cloud.radius * (0.75f - 0.35f * progress) * (0.9f + 0.1f * pulse);
+
+        DrawCircleV(screenPos, radius, Fade(kPoisonWarnColor, 0.22f + 0.10f * pulse));
+        DrawCircleLinesV(screenPos, cloud.radius * (0.55f + 0.45f * progress), Fade(kPoisonWarnColor, 0.6f));
+    }
 }
 
 // =============================================================================
@@ -21566,14 +21505,6 @@ void Engine::DrawDungeonRun()
                     int biomeTagW = MeasureText(biomeTag, 16);
                     DrawText(biomeTag, (int)(sw - biomeTagW - 12), (int)(sh - 26), 16,
                         Fade(Color{ 160, 200, 255, 255 }, 0.55f));
-                }
-
-                if (_isDailyRun)
-                {
-                    const char* dailyTag = TextFormat("DAILY RUN  #%d", _dailySeed);
-                    int dw = MeasureText(dailyTag, 16);
-                    DrawText(dailyTag, (int)(sw - dw - 12), (int)(sh - 46), 16,
-                        Fade(Color{ 255, 210, 120, 255 }, 0.75f));
                 }
             }
             // Hold TAB: full-screen dungeon map overlay for planning.

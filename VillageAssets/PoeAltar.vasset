@@ -1,0 +1,11 @@
+village_asset 1
+image PoeAltar.png
+size 64 64
+id PoeAltar
+category Building
+service Training
+cost 150
+required 0
+unique 0
+removable 1
+collider 8.00 8.00 48.00 48.00

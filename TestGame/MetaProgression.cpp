@@ -72,10 +72,6 @@ void MetaProgressionManager::Load()
             if (index >= 0 && index < (int)MetaUnlockType::Count)
                 _unlocked[index] = (atoi(val) != 0);
         }
-        else if (strncmp(key, "beast_", 6) == 0)
-        {
-            _bestiary[std::string(key + 6)] = atoi(val);
-        }
     }
     fclose(f);
 
@@ -110,8 +106,6 @@ void MetaProgressionManager::Save() const
     for (int i = 0; i < (int)MetaUnlockType::Count; i++)
         if (_unlocked[i])
             fprintf(f, "unlock_%d=1\n", i);
-    for (const auto& kv : _bestiary)
-        fprintf(f, "beast_%s=%d\n", kv.first.c_str(), kv.second);
     fclose(f);
 #endif
 }
@@ -163,13 +157,6 @@ void MetaProgressionManager::RecordGameCompleted()
     if (_gameCompleted) return;
     _gameCompleted = true;
     Save();
-}
-
-// ── Bestiary ────────────────────────────────────────────────────────────────
-void MetaProgressionManager::RecordBestiaryKill(const char* name)
-{
-    if (name == nullptr || name[0] == '\0') return;
-    _bestiary[std::string(name)]++;
 }
 
 // ── Banking ───────────────────────────────────────────────────────────────────

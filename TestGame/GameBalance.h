@@ -389,6 +389,19 @@ namespace Balance::Rhythm
     // before it may move or attack"). Brief on purpose — this is a readability
     // beat, not a stun mechanic.
     inline constexpr float kSpawnArrivalDelaySeconds = 0.20f;
+
+    // Distance from a held Reposition/Support engagement point within which an
+    // enemy stops closing entirely (holds/idles) instead of continuously
+    // overshooting and correcting every frame — a raw target-seek with no
+    // deceleration oscillates back and forth across a stationary hold point,
+    // which reads as the enemy "shaking." See Enemy::HandleMovement.
+    inline constexpr float kEngagementArrivalDeadzone = 28.f;
+
+    // Sporeling / volatile-death poison clouds arm this long after the enemy
+    // dies before they deal damage or show their persistent decal — a tick-
+    // down warning ring telegraphs the danger instead of it appearing
+    // instantly on death. See Engine::SpawnPoisonCloud/UpdatePoisonClouds.
+    inline constexpr float kPoisonCloudArmDelaySeconds = 2.0f;
 }
 
 namespace Balance::DamageNumbers

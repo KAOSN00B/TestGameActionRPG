@@ -38,14 +38,14 @@ enum class VillageBuildCategory { Building, Decor, Path, Utility, Trophy };
 enum class VillageService
 {
     None, Shop, Graveyard, Training, ClassChange,
-    Wardrobe, Bestiary, Cartographer, TrophyHall, DungeonGate, Relic
+    Wardrobe, Cartographer, TrophyHall, DungeonGate, Relic
 };
 
 // What a press-interact zone does when the player triggers it.
 enum class VillageInteractionType
 {
     None, Shop, Talk, Enter, Train, ChangeClass,
-    Wardrobe, Bestiary, Inspect, StartRun
+    Wardrobe, Inspect, StartRun
 };
 
 // The meaning of a marker point. Generic markers carry their meaning in `name`;
@@ -158,6 +158,13 @@ namespace VillageAssetLoader
     // raylib's LoadDirectoryFiles) can instead call Load() per file and skip
     // this entirely.
     std::vector<VillageAssetData> LoadCatalog(const std::string& folder);
+
+    // Writes one ".vasset" file in the format Load() parses. Atomic: writes to
+    // "<vassetPath>.tmp" then replaces the destination, so a crash mid-write (or
+    // the running game reading the file concurrently) can never see a partial
+    // file. Returns false if the temp file could not be written or the replace
+    // failed.
+    bool Save(const std::string& vassetPath, const VillageAssetData& data);
 
     // String <-> enum helpers (also used by the self-test's readable output).
     const char* ToString(VillageBuildCategory category);

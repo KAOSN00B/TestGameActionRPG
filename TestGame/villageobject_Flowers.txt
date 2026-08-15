@@ -1,8 +1,0 @@
-object Flowers
-decor
-cost 3
-tile_size 16
-part g 0 0 1 0 1 Village
-part g 1 0 1 1 1 Village
-part g 0 1 1 0 2 Village
-part g 1 1 1 1 2 Village

@@ -3,11 +3,11 @@ image VillageGraveyard.png
 size 196 132
 id VillageGraveyard
 category Building
-service None
+service Graveyard
 cost 0
-required 0
-unique 0
-removable 1
+required 1
+unique 1
+removable 0
 collider 5.08 5.52 13.12 119.30
 collider 17.92 86.16 16.02 24.30
 collider 18.47 38.66 15.88 23.33

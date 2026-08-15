@@ -43,7 +43,6 @@ It should start compact and only grow when new systems need the space.
 Current village anchor points:
 - Graveyard: death / respawn / Poe space
 - Shop: Zeph's shop
-- Bestiary / sanctuary space
 - 3 to 4 villager houses
 - 5 to 6 visible NPCs, with some interior NPCs later
 - player decoration space: trees, flowers, mushrooms, benches, signs, fences
@@ -87,7 +86,6 @@ The village needs:
 - room for custom decoration
 - service buildings that matter to progression
 - a clear respawn/death anchor
-- a bestiary or creature sanctuary concept
 
 What Is Not The Focus Right Now
 -------------------------------

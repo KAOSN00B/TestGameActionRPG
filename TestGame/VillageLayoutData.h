@@ -30,4 +30,10 @@ public:
     static VillageLayout Fallback();
     static Vector2 LocalToWorld(const VillageLayoutObject& object, Vector2 localPoint);
     static Rectangle LocalToWorld(const VillageLayoutObject& object, Rectangle localRect);
+
+    // Writes the same grammar Load() parses. Atomic: writes to "<path>.tmp" then
+    // replaces the destination, so a save on every place/remove click can never
+    // leave a half-written file behind. Returns false if the temp file could
+    // not be written or the replace failed.
+    static bool Save(const std::string& path, const VillageLayout& layout);
 };

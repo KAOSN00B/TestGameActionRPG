@@ -3,11 +3,11 @@ image ZephsShop.png
 size 201 100
 id ZephsShop
 category Building
-service None
+service Shop
 cost 0
-required 0
-unique 0
-removable 1
+required 1
+unique 1
+removable 0
 collider 2.00 68.00 19.00 28.00
 collider 180.00 68.00 20.00 28.00
 collider 33.57 3.88 135.54 93.90

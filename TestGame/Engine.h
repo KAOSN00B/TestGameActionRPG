@@ -72,6 +72,7 @@
 #include "CharacterAnimator.h"
 #include "AttackEditor.h"
 #include "MapEditor.h"
+#include "VillageAssetData.h"
 #include "DungeonGen.h"
 #include "TileDefs.h"
 #include "RoomLayout.h"
@@ -290,17 +291,6 @@ private:
     void ResolveActiveModifiersOnRoomClear();   // on combat-room clear
     void ClearRunModifiers();                   // on death / new run
 
-    // Bestiary (#20)
-    void  UpdateBestiary();
-    void  DrawBestiary();
-    GameState _bestiaryReturnState = GameState::Menu;
-    float _bestiaryScroll = 0.f;
-
-    // Daily runs (#20) — a seeded, reproducible dungeon shared by the calendar day.
-    bool _isDailyRun = false;
-    int  _dailySeed  = 0;
-    int  ComputeDailySeed() const;   // yyyymmdd from the local clock
-
     // Relic choice (#22) — elite/boss kills owe a 3-card relic pick, deferred
     // until the room is clear so it never interrupts combat.
     int       _pendingRelicChoices = 0;
@@ -390,7 +380,10 @@ private:
         bool required = false;               // service/quest asset, not optional decor
         bool uniqueInVillage = false;        // only one allowed in the real village
         bool removable = true;               // can be removed/refunded after placement
-        std::string serviceName;             // Shop, Relic, Wardrobe, Bestiary, etc. for future dispatch
+        std::string serviceName;             // Shop, Relic, Wardrobe, etc. for future dispatch
+        VillageService service = VillageService::None;      // typed form of serviceName, .vasset-backed entries only
+        std::vector<VAssetMarker> markers;                   // named anchors (Zeph/Poe/Respawn/NPCSpawn/...)
+        std::vector<VAssetInteraction> interactions;         // authored press-interact zones
         Texture2D pngTexture{};              // VillageAssets PNG path, used by .vasset-backed entries
         float pngScale = 3.f;
         bool  pngAnimated = false;
@@ -410,14 +403,12 @@ private:
         int defIndex = -1;                   // runtime-resolved catalog index
         int cellCol = 0, cellRow = 0;
     };
-    void EnterVillagePlayground();            // Y-key sandbox tester (never saves)
     void EnterVillage();                      // main-game hub (saves, graveyard respawn, gate)
-    void EnterVillageShared(bool sandboxMode);
+    void EnterVillageShared();
     bool VillageHasPlacedObject(const std::string& defName) const;
     void UnloadVillagePlayground();
     void LoadVillagePlaygroundSheets();
     void LoadVillagePlaygroundCatalog();
-    bool LoadVillageRuntimeObject(const std::string& path, VillageRuntimeObjectDef& outDef) const;
     bool LoadVillageRuntimeAssetObject(const std::string& path, VillageRuntimeObjectDef& outDef) const;
     void UpdateVillagePlayground(float dt);
     void DrawVillagePlayground();
@@ -433,6 +424,8 @@ private:
     Rectangle VillageDoorWorldRect(const VillagePlacedObject& placed, const VillageRuntimeDoor& door) const;
     bool VillageDoorIsOpen(const VillagePlacedObject& placed, const VillageRuntimeDoor& door) const;
     void RefreshVillageShopNpc();
+    void UpdateVillagePlacedObjectServices(float dt);   // press-E service dispatch (Training->MetaShop, ...)
+    void TriggerVillageDungeonGate();   // start/resume a run; shared by the fixed approach-rect check and the DungeonGate service
     int FindVillageObjectDefIndex(const std::string& defName) const;
     void DrawVillageField(Vector2 worldOffset) const;   // forest floor + wall border ring
     void DrawVillagePlacementGhost(Vector2 worldOffset, Vector2 mouseWorld);
@@ -1294,6 +1287,11 @@ private:
         Vector2 pos{};
         float   timer  = 0.f;
         float   radius = 120.f;
+        // Time remaining before this cloud arms (deals damage / shows its
+        // persistent decal). While > 0 the cloud only shows a shrinking warning
+        // ring — a tick-down-then-explode telegraph instead of appearing
+        // instantly on death. See Balance::Rhythm::kPoisonCloudArmDelaySeconds.
+        float   armDelay = 0.f;
     };
     std::vector<PoisonCloud> _poisonClouds;
     float _poisonDamageCooldown = 0.f;
@@ -1360,6 +1358,8 @@ private:
     std::vector<VillageRuntimeObjectDef> _villageObjectCatalog;
     std::vector<VillagePlacedObject> _villagePlacedObjects;
     int _villageActiveObjectIndex = -1;
+    bool _villageIsRelocating = false;               // true while an existing placed object is picked up (M+click) awaiting a new spot
+    VillagePlacedObject _villageRelocatingOriginal{}; // restored on cancel; re-placed (no cost) on drop
     float _villageCatalogScroll = 0.f;
     std::string _villagePlaygroundMessage;
     float _villagePlaygroundMessageTimer = 0.f;
@@ -1368,7 +1368,6 @@ private:
     std::string _villageInteriorName;          // which interior (e.g. "interior_default")
     Vector2 _villageInteriorReturnPos{};       // village world pos restored on exit
     bool _villageBuildMode = false;            // B toggles: build (catalog+ghost) vs walk (doors/NPCs)
-    bool _villageSandboxMode = true;           // Y-key tester: no saving, no tutorial gating, free placement
     GameState _classSelectReturnState = GameState::Menu;   // where ESC from ClassSelect goes (Menu or Village)
     std::vector<VillageCitizen> _villageCitizens;
     TileDefSet _villageTileDefs;               // Forest tile assignments for the village field

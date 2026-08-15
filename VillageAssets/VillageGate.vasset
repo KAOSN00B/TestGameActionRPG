@@ -1,0 +1,11 @@
+village_asset 1
+image VillageGate.png
+size 64 16
+id VillageGate
+category Utility
+service DungeonGate
+cost 0
+required 1
+unique 1
+removable 0
+interact 0.00 0.00 64.00 16.00 type=StartRun

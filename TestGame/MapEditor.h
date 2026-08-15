@@ -20,14 +20,6 @@ public:
     bool WantsToExit() const { return _wantsToExit; }
 
 private:
-    enum class MarkerKind
-    {
-        Zeph = 0,
-        Poe,
-        Respawn,
-        Count
-    };
-
     struct ColliderBox
     {
         Rectangle rect{}; // image-local pixels
@@ -35,8 +27,9 @@ private:
 
     struct Marker
     {
-        bool has = false;
-        Vector2 pos{}; // image-local pixels; may be outside the PNG bounds
+        std::string name;   // authored name, e.g. "Zeph" or any custom label
+        std::string npcId;  // optional; which NPC/thing this anchor is for
+        Vector2 pos{};       // image-local pixels; may be outside the PNG bounds
     };
 
     struct Asset
@@ -47,7 +40,7 @@ private:
         std::string metaPath;
         Texture2D texture{};
         std::vector<ColliderBox> colliders;
-        Marker markers[(int)MarkerKind::Count];
+        std::vector<Marker> markers;
         bool dirty = false;
 
         // Buying/service metadata — saved into .vasset, read by VillageAssetData.
@@ -76,10 +69,12 @@ private:
     void UpdateSelectedColliderKeys();
     void UpdateSelectedMarkerKeys();
     void UpdateAssetMetadataKeys();   // cost/category/service/flags + collider quick-modes
+    void UpdateNameEntry();           // new-asset / new-marker text-input capture
     void DrawPanel(Rectangle panel) const;
     void DrawCanvas(Rectangle canvas) const;
     void DrawHelp() const;
     void DrawStatusBar() const;
+    void DrawNameEntry() const;
 
     Vector2 ImageToScreen(Vector2 imagePos) const;
     Vector2 ScreenToImage(Vector2 screenPos) const;
@@ -94,10 +89,13 @@ private:
     enum class ColliderHandle { None, TopLeft, TopRight, BottomLeft, BottomRight };
     ColliderHandle ColliderHandleAt(const ColliderBox& box, Vector2 screenPos) const;
     void AddCollider(Rectangle imageRect);
-    void SetMarker(MarkerKind kind, Vector2 imagePos);
+    void AddMarker(const std::string& name, Vector2 imagePos);
+    void BeginCreateAsset();          // "New Asset" button: prompts for a name
+    void BeginPlaceMarker();          // "New Marker" button: next canvas click prompts for a name
+    void FinishNameEntry(bool confirmed);
+    void CreateAssetFromName(const std::string& name);
 
-    const char* MarkerName(MarkerKind kind) const;
-    Color MarkerColor(MarkerKind kind) const;
+    Color MarkerColor(const std::string& name) const;
     std::string MarkerOffsetText(const Asset& asset, Vector2 markerPos) const;
     Asset* ActiveAsset();
     const Asset* ActiveAsset() const;
@@ -127,4 +125,11 @@ private:
     bool _wantsToExit = false;
     std::string _status;
     float _statusTimer = 0.f;
+
+    // Name entry (shared text box for "New Asset" and "New Marker").
+    enum class NameEntryPurpose { None, NewAsset, NewMarker };
+    NameEntryPurpose _nameEntryPurpose = NameEntryPurpose::None;
+    std::string _nameEntryBuffer;
+    bool _placingMarker = false;      // "New Marker" armed: next canvas click captures a position
+    Vector2 _pendingMarkerPos{};      // canvas click position, held until the name is confirmed
 };

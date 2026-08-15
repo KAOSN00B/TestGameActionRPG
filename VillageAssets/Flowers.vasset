@@ -1,0 +1,10 @@
+village_asset 1
+image Flowers.png
+size 32 32
+id Flowers
+category Decor
+service None
+cost 3
+required 0
+unique 0
+removable 1

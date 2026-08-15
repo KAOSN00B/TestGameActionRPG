@@ -1,4 +1,5 @@
-﻿#include "CutsceneManager.h"
+﻿
+#include "CutsceneManager.h"
 #include "VirtualCanvas.h"
 #include "raymath.h"
 #include "VirtualCanvas.h"

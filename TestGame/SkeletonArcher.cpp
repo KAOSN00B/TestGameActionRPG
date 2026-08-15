@@ -218,17 +218,29 @@ void SkeletonArcher::Update(float dt, Vector2 heroWorldPos,
         float distToPlayer = Vector2Distance(_worldPos, heroWorldPos);
         bool  hasLineOfSight = _relentlessFire || !hasNavigationTarget;
 
-        // Begin the draw-bow telegraph when in range with a clear line.
-        if (!_drawingBow && !_takingDamage &&
+        // Begin the draw-bow telegraph when in range with a clear line — but
+        // only if this archer actually holds (or can claim) this frame's
+        // shared Commit slot. Without this gate every in-range archer fires
+        // regardless of the commit-slot budget, defeating the "2 early / 3
+        // later" simultaneous-attacker limit for this enemy type entirely
+        // (its positioning already consulted the engagement intent, but its
+        // attack trigger never did).
+        bool canCommitShot = !HasEngagementAssignment() ||
+            (GetEngagementIntent() == EngagementIntent::Commit && _engagementLatch.CanCommit());
+        if (!_drawingBow && !_takingDamage && canCommitShot &&
             _shotCooldown <= 0.f && distToPlayer < _fireMaxRange && hasLineOfSight)
         {
             _drawingBow = true;
             _drawTimer  = 0.f;
             SetAttackAnimation(true);
+            _engagementLatch.BeginCommit();
         }
 
         if (_drawingBow && (IsFrozen() || IsElectroStunned()))
+        {
             CancelDraw();
+            _engagementLatch.EndCommit();   // interrupted mid-draw — release the slot
+        }
 
         if (_drawingBow)
         {
@@ -244,6 +256,7 @@ void SkeletonArcher::Update(float dt, Vector2 heroWorldPos,
                 _shotCooldown = _shotCooldownInst;
                 _relocateTimer = _relocateDuration;   // relocate once, then plant again
                 SetIdleAnimation(true);
+                _engagementLatch.EndCommit();
             }
         }
 
@@ -315,7 +328,7 @@ void SkeletonArcher::HandleKiteMovement(float dt, const std::vector<Vector2>& pr
         // plain lateral strafe otherwise.
         if (HasEngagementAssignment() && GetEngagementIntent() != EngagementIntent::Commit)
         {
-            Vector2 toLane = Vector2Subtract(GetEngagementTarget(), _worldPos);
+            Vector2 toLane = Vector2Subtract(GetStableEngagementTarget(dt), _worldPos);
             moveDir = (Vector2Length(toLane) > 0.01f)
                 ? Vector2Normalize(toLane)
                 : Vector2{ -playerDir.y * _strafeSign, playerDir.x * _strafeSign };

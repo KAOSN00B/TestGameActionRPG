@@ -4,3 +4,4 @@ spawn VillageGraveyard Respawn
 exit 870 40 180 90
 object VillageGraveyard 310 190 2.0 permanent
 object ZephsShop 1190 210 2.0 permanent
+object VillageGate 864 0 1.0 permanent

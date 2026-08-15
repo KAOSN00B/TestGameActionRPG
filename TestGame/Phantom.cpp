@@ -178,11 +178,24 @@ void Phantom::Update(float dt, Vector2 heroWorldPos, Vector2 /*navigationTarget*
             // Assassin-role bias) instead of the player/flank-past-player
             // line, so a Phantom whose turn hasn't come up drifts to a new
             // angle and waits there rather than still homing in.
+            bool holdingStablePoint = false;
             if (HasEngagementAssignment() && GetEngagementIntent() != EngagementIntent::Commit)
-                driftTarget = GetEngagementTarget();
+            {
+                driftTarget = GetStableEngagementTarget(dt);
+                holdingStablePoint = true;
+            }
 
             Vector2 toDriftTarget = Vector2Subtract(driftTarget, _worldPos);
-            if (Vector2Length(toDriftTarget) > 0.01f)
+            // Arrival deadzone, ONLY while holding a stable Reposition point
+            // (never during a genuine chase, where driftTarget keeps moving
+            // with the player/phased-flank line and should still be walked
+            // all the way to bite range). Without this, a constant-speed
+            // drift toward a now-stationary point (see GetStableEngagementTarget)
+            // overshoots it every frame and shakes in place — same root cause
+            // already fixed for the shared Enemy::HandleMovement path.
+            bool arrivedAtHold = holdingStablePoint &&
+                Vector2Length(toDriftTarget) < Balance::Rhythm::kEngagementArrivalDeadzone;
+            if (!arrivedAtHold && Vector2Length(toDriftTarget) > 0.01f)
             {
                 Vector2 drift = Vector2Scale(Vector2Normalize(toDriftTarget), driftSpeed * dt);
                 drift.y += sinf(_bobTimer * 2.6f) * 20.f * dt;

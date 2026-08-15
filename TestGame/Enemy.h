@@ -186,6 +186,25 @@ inline Vector2 ComputeEngagementTarget(Vector2 player, Vector2 self, Vector2 all
     return Vector2Add(player, offset);
 }
 
+// ── Engagement slot eligibility (Task 1: hardening pass) ─────────────────────
+// Pure predicate: may an enemy in these states occupy (or newly grab) a
+// commit/engagement slot? Factored out as a free function — like
+// ComputeEngagementTarget above — so it is independently unit-testable
+// without constructing a raylib-backed Enemy (Enemy's constructor and
+// several of its virtuals are defined out-of-line in Enemy.cpp, which pulls
+// in LoadTexture/PlaySound/CharacterTuningStore — linking that in just to
+// test a boolean predicate would be out of scope for a fast standalone
+// test). Enemy::CanOccupyEngagementSlot() below is a thin wrapper over this
+// using its own live state. See the design's "Engagement Lifecycle": "An
+// enemy may occupy a commit slot only when it is active, alive, not dying,
+// not pit-falling, not arriving, not frozen, and not electro-stunned."
+inline bool EvaluateEngagementSlotEligibility(bool active, bool alive, bool dying,
+                                               bool pitFalling, bool arriving,
+                                               bool frozen, bool electroStunned)
+{
+    return active && alive && !dying && !pitFalling && !arriving && !frozen && !electroStunned;
+}
+
 // ── Player-made ground hazard (Consecrate, poison pool, corruption pool...) ──
 // Engine rebuilds the active list each frame from its ticking damage zones and
 // shares it with every enemy, so enemies can steer around danger instead of
@@ -280,6 +299,29 @@ public:
     // never builds per-frame assignments (see HandleAttack for details).
     bool HasEngagementAssignment() const { return _hasEngagementAssignment; }
 
+    // ── Engagement runtime boundary (Task 1: hardening pass) ─────────────────
+    // The SINGLE place that ever advances the engagement latch's post-attack
+    // recovery countdown. CombatDirector::UpdateEnemyRuntime calls this
+    // exactly once per active enemy per frame, before engagement candidates
+    // are built (see the design's "Engagement Lifecycle"). Do not tick
+    // _engagementLatch anywhere else (base Enemy::Update, a subclass Update,
+    // HandleAttack, ...) — a second call site here would double-tick recovery
+    // and let it complete twice as fast as authored.
+    void UpdateEngagementRuntime(float dt) { _engagementLatch.Update(dt); }
+
+    // Pure eligibility check: may this enemy occupy (or newly grab) a
+    // commit/engagement slot right now? See EvaluateEngagementSlotEligibility
+    // above for the independently-testable free-function version of this
+    // exact rule. Does not by itself protect an already-locked authored
+    // attack from eviction when a disabling flag flips mid-swing — see
+    // CombatDirector.cpp's candidate-building code for how locked ownership
+    // is preserved (IsAttackLockedForEngagement()) through that case.
+    bool CanOccupyEngagementSlot() const
+    {
+        return EvaluateEngagementSlotEligibility(IsActive(), IsAlive(), IsDying(), IsPitFalling(),
+            IsArriving(), IsFrozen(), IsElectroStunned());
+    }
+
     // Fragile swarm-profile flag consumed by EngagementCandidate::swarm (the
     // one-extra-committer bonus slot in a swarm encounter). Plumbing only in
     // this task — defaults false; classifying which enemy types "are" swarm-
@@ -313,11 +355,6 @@ public:
     // GetTuningName() returns nullptr for types without tuning support; a name
     // enables loading charactertuning_<Name>.txt at the end of ResetForSpawn.
     virtual const char* GetTuningName() const { return nullptr; }
-
-    // Human-readable type name for the bestiary. Records once per death.
-    const char* GetBestiaryName();
-    bool BestiaryRecorded() const { return _bestiaryRecorded; }
-    void SetBestiaryRecorded() { _bestiaryRecorded = true; }
 
     // Animation preview: the default implementation covers the five standard
     // grunt sheets; bosses override with their own sheet lists.
@@ -430,7 +467,7 @@ public:
 
     // Shared pit fall for basic enemies. CombatDirector pauses normal AI while
     // this shrinks and pulls the sprite inward; Engine finishes it as a normal
-    // death so rewards, bestiary credit, and pooled cleanup still run.
+    // death so rewards and pooled cleanup still run.
     void BeginPitFall(Vector2 pullTarget, Color tint = WHITE);
     void UpdatePitFall(float dt);
     void FinishPitFall();
@@ -829,13 +866,32 @@ protected:
     bool    _engagementHoldValid = false;
     static constexpr float _engagementHoldDuration = 1.4f;
 
+    // Smoothed accessor for GetEngagementTarget(): the subclasses with a fully
+    // overridden Update() (SkeletonArcher, FlameWisp, Phantom, BomberImp) never
+    // call HandleMovement, so they never get the sampling above — if they read
+    // GetEngagementTarget() directly instead, they chase a point that jumps to
+    // an essentially new value every single frame, producing erratic full-speed
+    // darting (reads as "way too fast"/vibrating) rather than holding a lane.
+    // Any subclass positioning code that wants a stable lane point should call
+    // this instead of the raw accessor.
+    Vector2 GetStableEngagementTarget(float dt)
+    {
+        _engagementHoldTimer -= dt;
+        if (!_engagementHoldValid || _engagementHoldTimer <= 0.f)
+        {
+            _engagementHoldPos   = _engagementTarget;
+            _engagementHoldValid = true;
+            _engagementHoldTimer = _engagementHoldDuration;
+        }
+        return _engagementHoldPos;
+    }
+
     // Slime's LocksApproachLineOnCommit(): the fixed point snapshotted the
     // first frame a genuine Commit approach begins, held until attack range
     // or a non-Commit intent breaks the lock.
     Vector2 _lockedApproachTarget{};
     bool    _approachLineLocked = false;
 
-    bool _bestiaryRecorded = false;   // has this death been counted in the bestiary
     bool _isEliteMiniboss = false;
     bool _isInvulnerable  = false;   // bodyguard shield (engine-driven)
     bool _leapInvulnerable = false;  // gap-closer wind-up (engine-driven)

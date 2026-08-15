@@ -2,6 +2,7 @@
 #include "MapEditor.h"
 #include "AssetPaths.h"
 #include "VirtualCanvas.h"
+#include "VillageAssetData.h"
 
 #include <algorithm>
 #include <cmath>
@@ -41,10 +42,10 @@ namespace
     const char* kCategoryNames[] = { "Building", "Decor", "Path", "Utility", "Trophy" };
     const int   kCategoryCount   = 5;
     // None first, then the services village buildings actually use.
-    const char* kServiceNames[]  = { "None", "Shop", "Relic", "Wardrobe", "Bestiary",
+    const char* kServiceNames[]  = { "None", "Shop", "Relic", "Wardrobe",
                                      "Training", "ClassChange", "Cartographer",
                                      "TrophyHall", "Graveyard", "DungeonGate" };
-    const int   kServiceCount    = 11;
+    const int   kServiceCount    = 10;
 
     bool EqualsCI(const char* a, const char* b)
     {
@@ -53,6 +54,24 @@ namespace
     #else
         return strcasecmp(a, b) == 0;
     #endif
+    }
+
+    // kCategoryNames/kServiceNames are UI-ordered, not enum-ordered, so map by
+    // string (via VillageAssetLoader::ToString) rather than casting the index.
+    VillageBuildCategory CategoryFromIndex(int idx)
+    {
+        for (int e = 0; e <= (int)VillageBuildCategory::Trophy; ++e)
+            if (EqualsCI(VillageAssetLoader::ToString((VillageBuildCategory)e), kCategoryNames[idx]))
+                return (VillageBuildCategory)e;
+        return VillageBuildCategory::Building;
+    }
+
+    VillageService ServiceFromIndex(int idx)
+    {
+        for (int e = 0; e <= (int)VillageService::Relic; ++e)
+            if (EqualsCI(VillageAssetLoader::ToString((VillageService)e), kServiceNames[idx]))
+                return (VillageService)e;
+        return VillageService::None;
     }
 }
 
@@ -67,11 +86,14 @@ void MapEditor::Init()
     _dragMarker = -1;
     _assetListScroll = 0.f;
     _statusTimer = 0.f;
+    _nameEntryPurpose = NameEntryPurpose::None;
+    _nameEntryBuffer.clear();
+    _placingMarker = false;
     LoadAssets();
     SelectAsset(_assets.empty() ? -1 : 0);
     _status = _assets.empty()
-        ? "No PNGs found in VillageAssets"
-        : "Village Asset Adjuster: add colliders, set Zeph/Poe/respawn markers, S save";
+        ? "No PNGs found in VillageAssets — click New Asset to start one"
+        : "Village Asset Adjuster: add colliders + markers, S save";
     _statusTimer = 5.f;
 }
 
@@ -147,26 +169,14 @@ const MapEditor::Asset* MapEditor::ActiveAsset() const
     return &_assets[_activeAsset];
 }
 
-const char* MapEditor::MarkerName(MarkerKind kind) const
+Color MapEditor::MarkerColor(const std::string& name) const
 {
-    switch (kind)
-    {
-    case MarkerKind::Zeph: return "Zeph";
-    case MarkerKind::Poe: return "Poe";
-    case MarkerKind::Respawn: return "Respawn";
-    default: return "Marker";
-    }
-}
-
-Color MapEditor::MarkerColor(MarkerKind kind) const
-{
-    switch (kind)
-    {
-    case MarkerKind::Zeph: return Color{ 90, 220, 255, 255 };
-    case MarkerKind::Poe: return Color{ 205, 150, 255, 255 };
-    case MarkerKind::Respawn: return Color{ 120, 255, 145, 255 };
-    default: return GOLD;
-    }
+    // Well-known names keep their original colors; any custom marker name
+    // (a new NPC spawn, a door anchor, etc.) gets a consistent default.
+    if (EqualsCI(name.c_str(), "Zeph"))    return Color{ 90, 220, 255, 255 };
+    if (EqualsCI(name.c_str(), "Poe"))     return Color{ 205, 150, 255, 255 };
+    if (EqualsCI(name.c_str(), "Respawn")) return Color{ 120, 255, 145, 255 };
+    return GOLD;
 }
 
 int MapEditor::AssetFrameWidth(const Asset& asset) const
@@ -214,62 +224,37 @@ std::string MapEditor::MarkerOffsetText(const Asset& asset, Vector2 markerPos) c
 void MapEditor::LoadMetadata(Asset& asset)
 {
     asset.colliders.clear();
-    for (int i = 0; i < (int)MarkerKind::Count; ++i) asset.markers[i] = Marker{};
+    asset.markers.clear();
     // Buying metadata back to defaults before parsing.
     asset.cost = 0; asset.categoryIdx = 0; asset.serviceIdx = 0;
     asset.required = false; asset.unique = false; asset.removable = true;
     asset.animEnabled = false; asset.animCols = 1; asset.animRows = 1; asset.animFrames = 1; asset.animFps = 6.f;
 
-    FILE* file = fopen(asset.metaPath.c_str(), "r");
-    if (!file) return;
+    VillageAssetData data;
+    if (!VillageAssetLoader::Load(asset.metaPath, data)) return;
 
-    char line[512];
-    while (fgets(line, sizeof(line), file))
+    for (const VaRect& collider : data.colliders)
+        asset.colliders.push_back(ColliderBox{ Rectangle{ collider.x, collider.y, collider.w, collider.h } });
+    for (const VAssetMarker& marker : data.markers)
+        asset.markers.push_back(Marker{ marker.name, marker.npcId, Vector2{ marker.localPos.x, marker.localPos.y } });
+
+    asset.cost = std::max(0, data.cost);
+    asset.required = data.required;
+    asset.unique = data.unique;
+    asset.removable = data.removable;
+    for (int k = 0; k < kCategoryCount; ++k)
+        if (EqualsCI(VillageAssetLoader::ToString(data.category), kCategoryNames[k])) { asset.categoryIdx = k; break; }
+    for (int k = 0; k < kServiceCount; ++k)
+        if (EqualsCI(VillageAssetLoader::ToString(data.service), kServiceNames[k])) { asset.serviceIdx = k; break; }
+    if (data.animation.enabled)
     {
-        float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
-        if (sscanf(line, "collider %f %f %f %f", &x, &y, &w, &h) == 4)
-        {
-            asset.colliders.push_back(ColliderBox{ Rectangle{ x, y, w, h } });
-            continue;
-        }
-
-        // Buying/service metadata.
-        int iv = 0; char sv[64] = {};
-        if (sscanf(line, "cost %d", &iv) == 1)      { asset.cost = iv < 0 ? 0 : iv; continue; }
-        if (sscanf(line, "required %d", &iv) == 1)  { asset.required  = iv != 0; continue; }
-        if (sscanf(line, "unique %d", &iv) == 1)    { asset.unique    = iv != 0; continue; }
-        if (sscanf(line, "removable %d", &iv) == 1) { asset.removable = iv != 0; continue; }
-        if (sscanf(line, "category %63s", sv) == 1)
-        { for (int k = 0; k < kCategoryCount; ++k) if (EqualsCI(sv, kCategoryNames[k])) { asset.categoryIdx = k; break; } continue; }
-        if (sscanf(line, "service %63s", sv) == 1)
-        { for (int k = 0; k < kServiceCount; ++k) if (EqualsCI(sv, kServiceNames[k])) { asset.serviceIdx = k; break; } continue; }
-        int ac = 1, ar = 1, af = 1; float fps = 6.f;
-        if (sscanf(line, "animation %d %d %d %f", &ac, &ar, &af, &fps) == 4)
-        {
-            asset.animEnabled = true;
-            asset.animCols = std::max(1, ac);
-            asset.animRows = std::max(1, ar);
-            asset.animFrames = std::max(1, af);
-            asset.animFps = std::max(0.1f, fps);
-            continue;
-        }
-
-        char markerName[64] = {};
-        if (sscanf(line, "marker %63s %f %f", markerName, &x, &y) == 3)
-        {
-            MarkerKind kind = MarkerKind::Count;
-            if (strcmp(markerName, "Zeph") == 0) kind = MarkerKind::Zeph;
-            else if (strcmp(markerName, "Poe") == 0) kind = MarkerKind::Poe;
-            else if (strcmp(markerName, "Respawn") == 0) kind = MarkerKind::Respawn;
-            if (kind != MarkerKind::Count)
-            {
-                asset.markers[(int)kind].has = true;
-                asset.markers[(int)kind].pos = Vector2{ x, y };
-            }
-        }
+        asset.animEnabled = true;
+        asset.animCols = std::max(1, data.animation.columns);
+        asset.animRows = std::max(1, data.animation.rows);
+        asset.animFrames = std::max(1, data.animation.frameCount);
+        asset.animFps = std::max(0.1f, data.animation.fps);
     }
 
-    fclose(file);
     asset.dirty = false;
 }
 
@@ -278,39 +263,43 @@ void MapEditor::SaveActiveMetadata()
     Asset* asset = ActiveAsset();
     if (!asset) return;
 
-    FILE* file = fopen(asset->metaPath.c_str(), "w");
-    if (!file)
+    VillageAssetData data;
+    data.id = asset->name;
+    data.displayName = asset->name;
+    data.imageFile = asset->pngFile;
+    data.imageSize = VaVec2{ (float)AssetFrameWidth(*asset), (float)AssetFrameHeight(*asset) };
+    data.category = CategoryFromIndex(asset->categoryIdx);
+    data.service = ServiceFromIndex(asset->serviceIdx);
+    data.cost = asset->cost;
+    data.required = asset->required;
+    data.unique = asset->unique;
+    data.removable = asset->removable;
+    if (asset->animEnabled)
+    {
+        data.animation.enabled = true;
+        data.animation.columns = std::max(1, asset->animCols);
+        data.animation.rows = std::max(1, asset->animRows);
+        data.animation.frameCount = std::max(1, asset->animFrames);
+        data.animation.fps = std::max(0.1f, asset->animFps);
+    }
+    for (const ColliderBox& box : asset->colliders)
+        data.colliders.push_back(VaRect{ box.rect.x, box.rect.y, box.rect.width, box.rect.height });
+    for (const Marker& marker : asset->markers)
+    {
+        VAssetMarker vaMarker;
+        vaMarker.name = marker.name;
+        vaMarker.npcId = marker.npcId;
+        vaMarker.localPos = VaVec2{ marker.pos.x, marker.pos.y };
+        data.markers.push_back(vaMarker);
+    }
+
+    if (!VillageAssetLoader::Save(asset->metaPath, data))
     {
         _status = "Could not save " + asset->metaPath;
         _statusTimer = 4.f;
         return;
     }
 
-    fprintf(file, "village_asset 1\n");
-    fprintf(file, "image %s\n", asset->pngFile.c_str());
-    fprintf(file, "size %d %d\n", AssetFrameWidth(*asset), AssetFrameHeight(*asset));
-    if (asset->animEnabled)
-        fprintf(file, "animation %d %d %d %.2f\n", std::max(1, asset->animCols), std::max(1, asset->animRows), std::max(1, asset->animFrames), std::max(0.1f, asset->animFps));
-    // Buying/service metadata (read by VillageAssetData -> build menu).
-    fprintf(file, "id %s\n", asset->name.c_str());
-    fprintf(file, "category %s\n", kCategoryNames[asset->categoryIdx]);
-    fprintf(file, "service %s\n",  kServiceNames[asset->serviceIdx]);
-    fprintf(file, "cost %d\n", asset->cost);
-    fprintf(file, "required %d\n",  asset->required  ? 1 : 0);
-    fprintf(file, "unique %d\n",    asset->unique    ? 1 : 0);
-    fprintf(file, "removable %d\n", asset->removable ? 1 : 0);
-    for (const ColliderBox& box : asset->colliders)
-        fprintf(file, "collider %.2f %.2f %.2f %.2f\n", box.rect.x, box.rect.y, box.rect.width, box.rect.height);
-
-    for (int i = 0; i < (int)MarkerKind::Count; ++i)
-    {
-        const Marker& marker = asset->markers[i];
-        if (!marker.has) continue;
-        MarkerKind kind = (MarkerKind)i;
-        fprintf(file, "marker %s %.2f %.2f\n", MarkerName(kind), marker.pos.x, marker.pos.y);
-    }
-
-    fclose(file);
     asset->dirty = false;
     _status = "Saved " + asset->name + ".vasset";
     _statusTimer = 3.f;
@@ -391,10 +380,9 @@ int MapEditor::MarkerAt(Vector2 imagePos) const
 
     float pickRadius = 14.f / std::max(0.25f, _zoom);
     float pickRadiusSq = pickRadius * pickRadius;
-    for (int i = 0; i < (int)MarkerKind::Count; ++i)
+    for (int i = 0; i < (int)asset->markers.size(); ++i)
     {
         const Marker& marker = asset->markers[i];
-        if (!marker.has) continue;
         float dx = marker.pos.x - imagePos.x;
         float dy = marker.pos.y - imagePos.y;
         if (dx * dx + dy * dy <= pickRadiusSq) return i;
@@ -434,19 +422,75 @@ void MapEditor::AddCollider(Rectangle imageRect)
     _statusTimer = 2.f;
 }
 
-void MapEditor::SetMarker(MarkerKind kind, Vector2 imagePos)
+void MapEditor::AddMarker(const std::string& name, Vector2 imagePos)
 {
     Asset* asset = ActiveAsset();
-    if (!asset) return;
+    if (!asset || name.empty()) return;
 
-    Marker& marker = asset->markers[(int)kind];
-    marker.has = true;
+    Marker marker;
+    marker.name = name;
     marker.pos = imagePos;
-    _selectedMarker = (int)kind;
+    asset->markers.push_back(marker);
+    _selectedMarker = (int)asset->markers.size() - 1;
     _selectedCollider = -1;
     asset->dirty = true;
-    _status = std::string("Set ") + MarkerName(kind) + " marker (" + MarkerOffsetText(*asset, imagePos) + ")";
+    _status = "Added " + name + " marker (" + MarkerOffsetText(*asset, imagePos) + ")";
     _statusTimer = 3.f;
+}
+
+void MapEditor::BeginPlaceMarker()
+{
+    if (!ActiveAsset()) return;
+    _placingMarker = true;
+    _status = "Click on the canvas to place the new marker";
+    _statusTimer = 3.f;
+}
+
+void MapEditor::BeginCreateAsset()
+{
+    _nameEntryPurpose = NameEntryPurpose::NewAsset;
+    _nameEntryBuffer.clear();
+}
+
+void MapEditor::FinishNameEntry(bool confirmed)
+{
+    if (confirmed && !_nameEntryBuffer.empty())
+    {
+        if (_nameEntryPurpose == NameEntryPurpose::NewAsset)
+            CreateAssetFromName(_nameEntryBuffer);
+        else if (_nameEntryPurpose == NameEntryPurpose::NewMarker)
+            AddMarker(_nameEntryBuffer, _pendingMarkerPos);
+    }
+    _nameEntryPurpose = NameEntryPurpose::None;
+    _nameEntryBuffer.clear();
+}
+
+void MapEditor::CreateAssetFromName(const std::string& name)
+{
+    std::string pngPath = JoinPath(_assetFolder, name + ".png");
+    if (FileExists(pngPath.c_str()))
+    {
+        Asset asset;
+        asset.name = name;
+        asset.pngFile = name + ".png";
+        asset.pngPath = pngPath;
+        asset.metaPath = JoinPath(_assetFolder, name + ".vasset");
+        asset.texture = LoadTexture(asset.pngPath.c_str());
+        SetTextureFilter(asset.texture, TEXTURE_FILTER_POINT);
+        LoadMetadata(asset);   // no .vasset yet, so this just resets to defaults
+        asset.dirty = true;
+        _assets.push_back(asset);
+        std::sort(_assets.begin(), _assets.end(), [](const Asset& a, const Asset& b) { return a.name < b.name; });
+        for (int i = 0; i < (int)_assets.size(); ++i)
+            if (_assets[i].name == name) { SelectAsset(i); break; }
+        _status = "Created " + name + " from its PNG. Press S to save its .vasset.";
+        _statusTimer = 4.f;
+    }
+    else
+    {
+        _status = "Drop " + name + ".png into VillageAssets, then click New Asset again.";
+        _statusTimer = 5.f;
+    }
 }
 
 void MapEditor::Update()
@@ -459,7 +503,18 @@ void MapEditor::Update()
         return;
     }
 
-    if (IsKeyPressed(KEY_ESCAPE)) { _wantsToExit = true; return; }
+    if (_nameEntryPurpose != NameEntryPurpose::None)
+    {
+        UpdateNameEntry();
+        return;
+    }
+
+    if (IsKeyPressed(KEY_ESCAPE))
+    {
+        if (_placingMarker) { _placingMarker = false; _status = "Cancelled"; _statusTimer = 1.5f; return; }
+        _wantsToExit = true;
+        return;
+    }
     if (IsKeyPressed(KEY_H)) { _helpOpen = true; return; }
     if (IsKeyPressed(KEY_S)) SaveActiveMetadata();
     if (IsKeyPressed(KEY_F))
@@ -478,12 +533,12 @@ void MapEditor::Update()
             _status = "Deleted collider";
             _statusTimer = 2.f;
         }
-        else if (asset && _selectedMarker >= 0 && _selectedMarker < (int)MarkerKind::Count)
+        else if (asset && _selectedMarker >= 0 && _selectedMarker < (int)asset->markers.size())
         {
-            asset->markers[_selectedMarker] = Marker{};
+            asset->markers.erase(asset->markers.begin() + _selectedMarker);
             _selectedMarker = -1;
             asset->dirty = true;
-            _status = "Cleared marker";
+            _status = "Deleted marker";
             _statusTimer = 2.f;
         }
     }
@@ -495,6 +550,19 @@ void MapEditor::Update()
     UpdateSelectedColliderKeys();
     UpdateSelectedMarkerKeys();
     UpdateAssetMetadataKeys();
+}
+
+void MapEditor::UpdateNameEntry()
+{
+    int key = GetCharPressed();
+    while (key > 0)
+    {
+        if (key >= 32 && key <= 126 && _nameEntryBuffer.size() < 48) _nameEntryBuffer.push_back((char)key);
+        key = GetCharPressed();
+    }
+    if (IsKeyPressed(KEY_BACKSPACE) && !_nameEntryBuffer.empty()) _nameEntryBuffer.pop_back();
+    if (IsKeyPressed(KEY_ENTER)) FinishNameEntry(true);
+    if (IsKeyPressed(KEY_ESCAPE)) FinishNameEntry(false);
 }
 
 void MapEditor::UpdatePanel(Rectangle panel)
@@ -571,6 +639,16 @@ void MapEditor::UpdatePanel(Rectangle panel)
         }
         return;
     }
+    if (buttonHit(bx, by + 76.f, 130.f, "New Asset"))
+    {
+        BeginCreateAsset();
+        return;
+    }
+    if (buttonHit(bx + 138.f, by + 76.f, 154.f, "New Marker"))
+    {
+        BeginPlaceMarker();
+        return;
+    }
 
     if (CheckCollisionPointRec(mouse, list))
     {
@@ -614,9 +692,15 @@ void MapEditor::UpdateCanvas(Rectangle canvas)
     Vector2 imageMouse = ScreenToImage(mouse);
     if (inCanvas && IsKeyPressed(KEY_C))
         AddCollider(Rectangle{ imageMouse.x - 32.f, imageMouse.y - 32.f, 64.f, 64.f });
-    if (inCanvas && IsKeyPressed(KEY_Z)) SetMarker(MarkerKind::Zeph, imageMouse);
-    if (inCanvas && IsKeyPressed(KEY_P)) SetMarker(MarkerKind::Poe, imageMouse);
-    if (inCanvas && IsKeyPressed(KEY_X)) SetMarker(MarkerKind::Respawn, imageMouse);
+
+    if (inCanvas && _placingMarker && IsMouseButtonPressed(MOUSE_LEFT_BUTTON))
+    {
+        _placingMarker = false;
+        _pendingMarkerPos = imageMouse;
+        _nameEntryPurpose = NameEntryPurpose::NewMarker;
+        _nameEntryBuffer.clear();
+        return;
+    }
 
     if (inCanvas && IsMouseButtonPressed(MOUSE_RIGHT_BUTTON))
     {
@@ -647,7 +731,7 @@ void MapEditor::UpdateCanvas(Rectangle canvas)
             _selectedCollider = -1;
             _dragMarker = markerHit;
             _dragMode = DragMode::MoveMarker;
-            _status = std::string("Selected ") + MarkerName((MarkerKind)markerHit) + " marker";
+            _status = "Selected " + asset->markers[markerHit].name + " marker";
             _statusTimer = 2.f;
             return;
         }
@@ -682,7 +766,7 @@ void MapEditor::UpdateCanvas(Rectangle canvas)
 
     if (_dragMode == DragMode::MoveMarker)
     {
-        if (_dragMarker < 0 || _dragMarker >= (int)MarkerKind::Count || !asset->markers[_dragMarker].has)
+        if (_dragMarker < 0 || _dragMarker >= (int)asset->markers.size())
         {
             _dragMode = DragMode::None;
             _dragMarker = -1;
@@ -696,10 +780,11 @@ void MapEditor::UpdateCanvas(Rectangle canvas)
         }
         else
         {
+            const Marker& moved = asset->markers[_dragMarker];
+            _status = "Moved " + moved.name + " marker (" + MarkerOffsetText(*asset, moved.pos) + ")";
+            _statusTimer = 3.f;
             _dragMode = DragMode::None;
             _dragMarker = -1;
-            _status = std::string("Moved ") + MarkerName((MarkerKind)_selectedMarker) + " marker (" + MarkerOffsetText(*asset, asset->markers[_selectedMarker].pos) + ")";
-            _statusTimer = 3.f;
         }
         return;
     }
@@ -839,9 +924,8 @@ void MapEditor::UpdateAssetMetadataKeys()
 void MapEditor::UpdateSelectedMarkerKeys()
 {
     Asset* asset = ActiveAsset();
-    if (!asset || _selectedCollider >= 0 || _selectedMarker < 0 || _selectedMarker >= (int)MarkerKind::Count) return;
+    if (!asset || _selectedCollider >= 0 || _selectedMarker < 0 || _selectedMarker >= (int)asset->markers.size()) return;
     Marker& marker = asset->markers[_selectedMarker];
-    if (!marker.has) return;
 
     float moveStep = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT) ? 8.f : 1.f;
     bool changed = false;
@@ -854,7 +938,7 @@ void MapEditor::UpdateSelectedMarkerKeys()
     if (changed)
     {
         asset->dirty = true;
-        _status = std::string("Moved ") + MarkerName((MarkerKind)_selectedMarker) + " marker (" + MarkerOffsetText(*asset, marker.pos) + ")";
+        _status = "Moved " + marker.name + " marker (" + MarkerOffsetText(*asset, marker.pos) + ")";
         _statusTimer = 1.5f;
     }
 }
@@ -868,6 +952,30 @@ void MapEditor::Draw() const
     DrawPanel(panel);
     DrawStatusBar();
     if (_helpOpen) DrawHelp();
+    if (_nameEntryPurpose != NameEntryPurpose::None) DrawNameEntry();
+}
+
+void MapEditor::DrawNameEntry() const
+{
+    DrawRectangle(0, 0, kVirtualWidth, kVirtualHeight, Fade(BLACK, 0.6f));
+    const char* title = _nameEntryPurpose == NameEntryPurpose::NewAsset ? "Name the new asset" : "Name the new marker";
+    Rectangle box{ kVirtualWidth * 0.5f - 260.f, kVirtualHeight * 0.5f - 60.f, 520.f, 120.f };
+    DrawRectangleRounded(box, 0.08f, 8, Color{ 34, 36, 44, 255 });
+    DrawRectangleRoundedLines(box, 0.08f, 8, GOLD);
+    int titleTw = MeasureText(title, 24);
+    DrawText(title, (int)(box.x + box.width * 0.5f - titleTw * 0.5f), (int)box.y + 16, 24, GOLD);
+
+    Rectangle field{ box.x + 20.f, box.y + 54.f, box.width - 40.f, 34.f };
+    DrawRectangleRec(field, Color{ 20, 21, 26, 255 });
+    DrawRectangleLinesEx(field, 1.f, Fade(RAYWHITE, 0.4f));
+    std::string shown = _nameEntryBuffer + ((int)(GetTime() * 2.0) % 2 == 0 ? "_" : "");
+    DrawText(shown.c_str(), (int)field.x + 10, (int)field.y + 7, 20, RAYWHITE);
+
+    const char* hint = _nameEntryPurpose == NameEntryPurpose::NewAsset
+        ? "Enter confirms (PNG must already be in VillageAssets) | Esc cancels"
+        : "Enter confirms | Esc cancels";
+    int hintTw = MeasureText(hint, 15);
+    DrawText(hint, (int)(box.x + box.width * 0.5f - hintTw * 0.5f), (int)(box.y + box.height - 22.f), 15, Fade(RAYWHITE, 0.6f));
 }
 
 void MapEditor::DrawPanel(Rectangle panel) const
@@ -876,7 +984,7 @@ void MapEditor::DrawPanel(Rectangle panel) const
     DrawLineEx(Vector2{ panel.x + panel.width, panel.y }, Vector2{ panel.x + panel.width, panel.y + panel.height }, 2.f, Color{ 70, 72, 86, 255 });
     DrawText("VILLAGE ASSET ADJUSTER", 16, 14, 24, GOLD);
     DrawText("PNGs in VillageAssets | .vasset metadata", 16, 44, 16, Fade(RAYWHITE, 0.72f));
-    DrawText("Z/P/X place markers | drag/arrows offset markers", 16, 64, 15, Fade(RAYWHITE, 0.72f));
+    DrawText("New Marker to name+place one | drag/arrows offset", 16, 64, 15, Fade(RAYWHITE, 0.72f));
 
     Rectangle list{ 10.f, 90.f, panel.width - 20.f, 230.f };
     DrawRectangleRec(list, Color{ 23, 24, 30, 255 });
@@ -910,11 +1018,13 @@ void MapEditor::DrawPanel(Rectangle panel) const
     drawButton(Rectangle{ 16.f, 368.f, 98.f, 30.f }, "Add Box", Color{ 95, 70, 52, 255 });
     drawButton(Rectangle{ 122.f, 368.f, 82.f, 30.f }, "Full", Color{ 98, 58, 48, 255 });
     drawButton(Rectangle{ 212.f, 368.f, 96.f, 30.f }, "No Coll", Color{ 88, 54, 54, 255 });
+    drawButton(Rectangle{ 16.f, 406.f, 130.f, 30.f }, "New Asset", Color{ 60, 90, 96, 255 });
+    drawButton(Rectangle{ 154.f, 406.f, 154.f, 30.f }, _placingMarker ? "Click canvas..." : "New Marker", _placingMarker ? GOLD : Color{ 96, 78, 60, 255 });
 
     const Asset* asset = ActiveAsset();
     if (!asset) return;
 
-    int y = 414;
+    int y = 452;
     DrawText(TextFormat("Asset: %s%s", asset->name.c_str(), asset->dirty ? " *" : ""), 16, y, 22, RAYWHITE); y += 30;
     DrawText(TextFormat("Image: %dx%d  frame: %dx%d", asset->texture.width, asset->texture.height, AssetFrameWidth(*asset), AssetFrameHeight(*asset)), 16, y, 18, Fade(RAYWHITE, 0.78f)); y += 26;
     DrawText(TextFormat("Colliders: %d   (W whole / N none)", (int)asset->colliders.size()), 16, y, 18, Fade(RAYWHITE, 0.78f)); y += 24;
@@ -928,37 +1038,27 @@ void MapEditor::DrawPanel(Rectangle panel) const
     DrawText(TextFormat("required %s (T)  unique %s (U)  removable %s (M)", asset->required ? "ON" : "off", asset->unique ? "ON" : "off", asset->removable ? "ON" : "off"),
              16, y, 16, Fade(RAYWHITE, 0.8f)); y += 28;
 
-    for (int i = 0; i < (int)MarkerKind::Count; ++i)
+    DrawText(TextFormat("Markers: %d (New Marker button to add)", (int)asset->markers.size()), 16, y, 18, Color{ 220, 200, 130, 255 }); y += 24;
+    for (int i = 0; i < (int)asset->markers.size(); ++i)
     {
-        MarkerKind kind = (MarkerKind)i;
         const Marker& marker = asset->markers[i];
-        Color c = marker.has ? MarkerColor(kind) : Fade(RAYWHITE, 0.42f);
-        const char* text = marker.has
-            ? TextFormat("%s: %.0f, %.0f", MarkerName(kind), marker.pos.x, marker.pos.y)
-            : TextFormat("%s: not set", MarkerName(kind));
-        DrawText(text, 16, y, 18, c);
+        Color c = MarkerColor(marker.name);
+        bool selected = i == _selectedMarker;
+        DrawText(TextFormat("%s: %.0f, %.0f", marker.name.c_str(), marker.pos.x, marker.pos.y), 16, y, 18, selected ? GOLD : c);
         y += 22;
-        if (marker.has)
-        {
-            std::string offset = MarkerOffsetText(*asset, marker.pos);
-            DrawText(offset.c_str(), 30, y, 15, offset == "inside PNG" ? Fade(RAYWHITE, 0.55f) : Fade(c, 0.78f));
-            y += 20;
-        }
-        else
-        {
-            y += 4;
-        }
+        std::string offset = MarkerOffsetText(*asset, marker.pos);
+        DrawText(offset.c_str(), 30, y, 15, offset == "inside PNG" ? Fade(RAYWHITE, 0.55f) : Fade(c, 0.78f));
+        y += 20;
     }
+    if (asset->markers.empty()) { DrawText("none yet", 30, y, 15, Fade(RAYWHITE, 0.5f)); y += 20; }
 
     y += 10;
-    if (_selectedMarker >= 0 && _selectedMarker < (int)MarkerKind::Count && asset->markers[_selectedMarker].has)
+    if (_selectedMarker >= 0 && _selectedMarker < (int)asset->markers.size())
     {
         const Marker& marker = asset->markers[_selectedMarker];
-        DrawText(TextFormat("Selected marker: %s", MarkerName((MarkerKind)_selectedMarker)), 16, y, 18, GOLD); y += 24;
+        DrawText(TextFormat("Selected marker: %s", marker.name.c_str()), 16, y, 18, GOLD); y += 24;
         DrawText(TextFormat("x %.0f y %.0f", marker.pos.x, marker.pos.y), 16, y, 17, RAYWHITE); y += 22;
-        std::string offset = MarkerOffsetText(*asset, marker.pos);
-        DrawText(offset.c_str(), 16, y, 15, offset == "inside PNG" ? Fade(RAYWHITE, 0.62f) : MarkerColor((MarkerKind)_selectedMarker)); y += 22;
-        DrawText("Drag marker or use arrows; Shift moves faster", 16, y, 15, Fade(RAYWHITE, 0.68f)); y += 24;
+        DrawText("Drag marker or use arrows; Shift moves faster; Delete removes", 16, y, 15, Fade(RAYWHITE, 0.68f)); y += 24;
     }
 
     DrawText("Selected collider:", 16, y, 18, GOLD); y += 24;
@@ -1025,13 +1125,11 @@ void MapEditor::DrawCanvas(Rectangle canvas) const
         }
     }
 
-    for (int i = 0; i < (int)MarkerKind::Count; ++i)
+    for (int i = 0; i < (int)asset->markers.size(); ++i)
     {
-        MarkerKind kind = (MarkerKind)i;
         const Marker& marker = asset->markers[i];
-        if (!marker.has) continue;
         Vector2 p = ImageToScreen(marker.pos);
-        Color c = MarkerColor(kind);
+        Color c = MarkerColor(marker.name);
         Vector2 nearestOnImage{
             ClampFloat(marker.pos.x, 0.f, (float)AssetFrameWidth(*asset)),
             ClampFloat(marker.pos.y, 0.f, (float)AssetFrameHeight(*asset))
@@ -1047,7 +1145,7 @@ void MapEditor::DrawCanvas(Rectangle canvas) const
         DrawCircleLines((int)p.x, (int)p.y, selected ? 15.f : 12.f, selected ? GOLD : c);
         DrawLine((int)p.x - 16, (int)p.y, (int)p.x + 16, (int)p.y, c);
         DrawLine((int)p.x, (int)p.y - 16, (int)p.x, (int)p.y + 16, c);
-        DrawText(MarkerName(kind), (int)p.x + 14, (int)p.y - 10, 18, c);
+        DrawText(marker.name.c_str(), (int)p.x + 14, (int)p.y - 10, 18, c);
     }
 
     if (_dragMode == DragMode::DrawCollider)
@@ -1055,6 +1153,16 @@ void MapEditor::DrawCanvas(Rectangle canvas) const
         Rectangle sr = ImageRectToScreen(NormalizeImageRect(_drawPreview));
         DrawRectangleRec(sr, Fade(Color{ 255, 80, 60, 255 }, 0.18f));
         DrawRectangleLinesEx(sr, 2.f, Color{ 255, 110, 90, 255 });
+    }
+
+    if (_placingMarker)
+    {
+        Vector2 mouse = GetVirtualMousePos();
+        if (CheckCollisionPointRec(mouse, canvas))
+        {
+            DrawCircleLines((int)mouse.x, (int)mouse.y, 10.f, GOLD);
+            DrawText("Click to place marker", (int)mouse.x + 14, (int)mouse.y - 8, 16, GOLD);
+        }
     }
 
     EndScissorMode();
@@ -1099,12 +1207,17 @@ void MapEditor::DrawHelp() const
         "",
         "Buying:    [ ] changes cost. ,/. changes category. ;/' changes service. T/U/M toggles flags.",
         "Animation: A toggles sheet animation. I/K cols, O/L rows, -/= frames, PgUp/PgDn fps.",
-        "Markers:   Z places Zeph. P places Poe. X places player respawn point.",
+        "Markers:   'New Marker' button, then click the canvas and type any name (Zeph, Poe,",
+        "           Respawn, or your own) and press Enter. Zeph/Poe/Respawn keep their special colors;",
+        "           any other name becomes a generic marker a service can look up later.",
         "           Markers may sit outside the PNG; the panel shows their pixel offset from it.",
-        "           Click/drag a marker, or use Arrow keys after selecting/placing it.",
+        "           Click/drag a marker, or use Arrow keys after selecting it. Delete removes it.",
+        "New Asset: click 'New Asset', type a name. If <name>.png is already in VillageAssets it",
+        "           loads immediately; otherwise drop the PNG in and click New Asset again.",
         "Saving:    S writes VillageAssets/<asset>.vasset. ESC returns to menu.",
         "",
-        "Next step: the village builder will place these PNG assets on a large forest-ground village map.",
+        "A saved asset's Service field (Shop, Training, DungeonGate, ...) is what makes it do",
+        "something in-game the moment it's placed in the village build menu — no C++ needed.",
     };
     int y = 150;
     for (const char* line : lines)

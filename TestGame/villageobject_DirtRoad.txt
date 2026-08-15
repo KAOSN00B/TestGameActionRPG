@@ -1,5 +1,0 @@
-object DirtRoad
-decor
-cost 2
-tile_size 16
-part g 0 0 0 2 13 Village_Ground

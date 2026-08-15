@@ -207,11 +207,18 @@ void FlameWisp::Update(float dt, Vector2 heroWorldPos,
                 _worldPos = Vector2Add(_worldPos, drift);
             }
 
-            if (_teleportCooldown <= 0.f && !controlled)
+            // Only teleport into an attack if this wisp holds (or can claim)
+            // this frame's shared Commit slot — without this gate every wisp
+            // in cooldown fires regardless of the commit-slot budget, since
+            // only its POSITIONING previously consulted the engagement intent.
+            bool canCommitCast = !HasEngagementAssignment() ||
+                (GetEngagementIntent() == EngagementIntent::Commit && _engagementLatch.CanCommit());
+            if (_teleportCooldown <= 0.f && !controlled && canCommitCast)
             {
                 _state          = WispState::TeleportOut;
                 _stateTimer     = 0.f;
-                _teleportTarget = PickTeleportSpot();
+                _teleportTarget = PickTeleportSpot(dt);
+                _engagementLatch.BeginCommit();
             }
             break;
         }
@@ -238,9 +245,11 @@ void FlameWisp::Update(float dt, Vector2 heroWorldPos,
         case WispState::Casting:
             if (controlled)
             {
-                // Interrupted — pay half the cooldown and go back to drifting.
+                // Interrupted — pay half the cooldown, release the commit
+                // slot, and go back to drifting.
                 _state            = WispState::Drifting;
                 _teleportCooldown = _teleportCooldownInst * 0.5f;
+                _engagementLatch.EndCommit();
                 break;
             }
             _stateTimer += dt;
@@ -253,6 +262,7 @@ void FlameWisp::Update(float dt, Vector2 heroWorldPos,
                     : Vector2{ 1.f, 0.f };
                 _state            = WispState::Drifting;
                 _teleportCooldown = _teleportCooldownInst;
+                _engagementLatch.EndCommit();
             }
             break;
         }
@@ -266,7 +276,7 @@ void FlameWisp::Update(float dt, Vector2 heroWorldPos,
     HandleAnimation(dt);
 }
 
-Vector2 FlameWisp::PickTeleportSpot() const
+Vector2 FlameWisp::PickTeleportSpot(float dt)
 {
     Vector2 playerPos = (_target != nullptr) ? _target->GetFeetWorldPos() : _worldPos;
 
@@ -281,7 +291,7 @@ Vector2 FlameWisp::PickTeleportSpot() const
     Vector2 spot;
     if (HasEngagementAssignment() && GetEngagementIntent() != EngagementIntent::Commit)
     {
-        spot = GetEngagementTarget();
+        spot = GetStableEngagementTarget(dt);
     }
     else
     {

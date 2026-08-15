@@ -1,7 +1,6 @@
 #pragma once
 
 #include "AbilityType.h"
-#include <map>
 #include <string>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,10 +101,6 @@ public:
     // Total cells banked over the profile's lifetime (stat for the altar screen).
     int GetLifetimeCells() const { return _lifetimeCells; }
 
-    // ── Bestiary — persistent kill counts keyed by enemy display name ─────────
-    void RecordBestiaryKill(const char* name);
-    const std::map<std::string, int>& GetBestiary() const { return _bestiary; }
-
     // ── Ascension (difficulty tiers unlocked by winning) ─────────────────────
     static constexpr int kMaxAscension = 6;
     int  GetSelectedAscension() const { return _selectedAscension; }
@@ -135,5 +130,4 @@ private:
     bool _rogueUnlocked = false;
     bool _warlockUnlocked = false;
     bool _gameCompleted = false;
-    std::map<std::string, int> _bestiary;   // enemy name -> lifetime kills
 };
